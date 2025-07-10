@@ -6,7 +6,7 @@ LIBS     := -lfortran_stdlib -lopenblas
 OPT      := -ffree-line-length-none -Ofast -march=native -funroll-loops -ffast-math
 WARN     := -std=f2018 -pedantic
 
-# Object files — explicitly ordered
+# Object files
 OBJS     := lbfgs.o ho_kernels.o RotheSolver_mod.o optimizers.o propagate_Gaussians.o
 
 # Final target
