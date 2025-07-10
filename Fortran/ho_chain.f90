@@ -39,8 +39,8 @@ program ho_chain
 ! …
 
 !–––– assemble matrices ––––
-Hmat  = H (p)        ! ⟨g_i|Ĥ|g_j⟩
-H2mat = H2(p)        ! ⟨g_i|Ĥ²|g_j⟩
+Hmat  = H (p,0.0_dp)        ! ⟨g_i|Ĥ|g_j⟩
+H2mat = H2(p,0.0_dp)        ! ⟨g_i|Ĥ²|g_j⟩
 Smat  = S (p)        ! ⟨g_i|g_j⟩
 
 allocate(eval(n), eval2(n))

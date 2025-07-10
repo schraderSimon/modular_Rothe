@@ -12,7 +12,7 @@ program ho_test
    p = 0.0_dp                ! (a, b, μ, p)
    p(1,1) = a                ! a = 1/√2
 
-   Hmat = H(p)
+   Hmat = H(p,0.0_dp)
    Smat = S(p)
    print '(A, F10.7)', 'normalization 〈S〉 = ',real(Smat(1,1))
    E    = real( Hmat(1,1) / Smat(1,1) )   ! expectation value
