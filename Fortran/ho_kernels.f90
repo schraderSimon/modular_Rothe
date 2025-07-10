@@ -70,7 +70,6 @@ contains
       n = size(p,1)
       allocate(Xmat(n,n))
 
-      Smat = S(p)  ! ⟨g_i|g_j⟩, needed for the kinetic part of H
       do i=1,n
          do j=i,n
             a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
@@ -82,11 +81,10 @@ contains
             beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
 
             fact = beta / (2.0_dp*alpha)
-            Xmat(i,j) = Smat(i,j) * fact
+            Xmat(i,j) = fact
             Xmat(j,i) = conjg(Xmat(i,j))
          end do
       end do
-      deallocate(Smat)
 
    end function x
 
@@ -102,7 +100,6 @@ contains
 
       n = size(p,1)
       allocate(X2mat(n,n))
-      Smat = S(p)  ! ⟨g_i|g_j⟩, needed for the kinetic part of H
       do i=1,n
          do j=i,n
             a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
@@ -115,11 +112,10 @@ contains
             !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
 
             fact = beta**2/(4.0_dp*alpha**2) + 1.0_dp/(2.0_dp*alpha)
-            X2mat(i,j) = Smat(i,j) * fact
+            X2mat(i,j) =  fact
             X2mat(j,i) = conjg(X2mat(i,j))
          end do
       end do
-      deallocate(Smat)
 
    end function x2
 function x3(p) result(X3mat)
@@ -133,7 +129,6 @@ function x3(p) result(X3mat)
       n = size(p,1)
       allocate(X3mat(n,n))
 
-      Smat = S(p)  ! ⟨g_i|g_j⟩, needed for the kinetic part of H
       do i=1,n
          do j=i,n
             a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
@@ -146,11 +141,10 @@ function x3(p) result(X3mat)
             !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
 
             fact = 3.0_dp/4.0_dp * beta/(alpha**2) + 1.0_dp/8.0_dp* (beta/alpha)**3
-            X3mat(i,j) = Smat(i,j) * fact
+            X3mat(i,j) =  fact
             X3mat(j,i) = conjg(X3mat(i,j))
          end do
       end do
-      deallocate(Smat)
 
    end function x3
 function x4(p) result(X4mat)
@@ -163,7 +157,6 @@ function x4(p) result(X4mat)
 
       n = size(p,1)
       allocate(X4mat(n,n))
-      Smat = S(p)  ! ⟨g_i|g_j⟩, needed for the kinetic part of H
       do i=1,n
          do j=i,n
             a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
@@ -176,11 +169,10 @@ function x4(p) result(X4mat)
             !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
 
             fact = 1/(2.0_dp*alpha**2)+beta**2/(2.0_dp*alpha**3) + (1/(2.0_dp*alpha)+(beta/(2.0_dp*alpha))**2)**2
-            X4mat(i,j) = Smat(i,j) * fact
+            X4mat(i,j) = fact
             X4mat(j,i) = conjg(X4mat(i,j))
          end do
       end do
-      deallocate(Smat)
 
    end function x4
    !────────────────── Hamiltonian H = –½∇² + ½ ω² x² ──────────────────
@@ -200,8 +192,8 @@ function x4(p) result(X4mat)
       allocate(Smat(n,n), Xmat(n,n), X2mat(n,n), Hmat(n,n))
 
       Smat = S (p)      ! ⟨g_i|g_j⟩
-      Xmat = x (p)      ! ⟨g_i|x|g_j⟩
-      X2mat = x2(p)     ! ⟨g_i|x²|g_j⟩
+      Xmat = x (p)*Smat      ! ⟨g_i|x|g_j⟩
+      X2mat = x2(p)*Smat     ! ⟨g_i|x²|g_j⟩
 
       do j = 1, n                      ! column → parameters of |g_j⟩
          a_j  = p(j,1);  b_j = p(j,2)
@@ -210,7 +202,7 @@ function x4(p) result(X4mat)
 
          do i = 1, n                   ! row → ⟨g_i|
             !──────── kinetic part  –½⟨∂²⟩  (see derivation in analysis) ────────
-            Hmat(i,j) =  -2.0_dp*bA_j**2 * ( X2mat(i,j) - 2.0_dp*mu_j*Xmat(i,j) + mu_j**2*Smat(i,j) )   &
+            Hmat(i,j) =  -2.0_dp*bA_j**2 * ( X2mat(i,j) - 2.0_dp*mu_j*Xmat(i,j) + mu_j**2.0_dp*Smat(i,j) )   &
                         + 2.0_dp*Im*bA_j*p_j * ( Xmat(i,j) - mu_j*Smat(i,j) )                          &
                         + ( 0.5_dp*p_j**2 + bA_j ) * Smat(i,j)                                         &
                         !──────── potential part  ½ ω² ⟨x²⟩ ────────
@@ -228,19 +220,18 @@ function x4(p) result(X4mat)
       complex(dp), allocatable :: H2mat(:,:)
       !– helper matrices already coded –
       complex(dp), allocatable :: Smat(:,:), Xmat(:,:), X2mat(:,:), X3mat(:,:), X4mat(:,:)
-      complex(dp) :: c0, c1, c2, c3, c4, bA_i_c
       !– loop indices & scratch –
       integer           :: n, i, j
       real(dp)          :: a_j, b_j, mu_j, p_j, a_i, b_i, mu_i, p_i
       complex(dp)       :: bA_j, bA_i                      !  bA_j = a_j² + i b_j
+      complex(dp)       :: bA_i_c,c(0:10), in(0:39)
       n = size(p,1)
       allocate(Smat(n,n), Xmat(n,n), X2mat(n,n), X3mat(n,n), X4mat(n,n), H2mat(n,n))
-      H2mat = 0.0_dp
       Smat = S (p)      ! ⟨g_i|g_j⟩
-      Xmat = x (p)      ! ⟨g_i|x|g_j⟩
-      X2mat = x2(p)     ! ⟨g_i|x²|g_j⟩
-      X3mat = x3(p)
-      X4mat = x4(p)
+      Xmat = x (p)!*Smat      ! ⟨g_i|x|g_j⟩
+      X2mat = x2(p)!*Smat     ! ⟨g_i|x²|g_j⟩
+      X3mat = x3(p)!*Smat
+      X4mat = x4(p)!*Smat
       do j= 1, n
          a_j  = p(j,1);  b_j = p(j,2)
          mu_j = p(j,3);  p_j = p(j,4)
@@ -252,27 +243,74 @@ function x4(p) result(X4mat)
             bA_i_c= conjg(bA_i)
             ! Kinetic squared
             ! This uses the fact that <gi|∂⁴|gj> = <∂²gi|∂²gj> (i.e. it is relatively simple to compute) 
-            c0 = 16_dp*bA_i_c**2*bA_j**2*mu_i**2*mu_j**2 + 16_dp*Im*bA_i_c**2*bA_j*mu_i**2*mu_j*p_j - 8_dp*bA_i_c**2*bA_j*mu_i**2 - 4_dp*bA_i_c**2*mu_i**2*p_j**2 - 16_dp*Im*bA_i_c*bA_j**2*mu_i*mu_j**2*p_i - 8_dp*bA_i_c*bA_j**2*mu_j**2 + 16_dp*bA_i_c*bA_j*mu_i*mu_j*p_i*p_j + 8_dp*Im*bA_i_c*bA_j*mu_i*p_i - 8_dp*Im*bA_i_c*bA_j*mu_j*p_j + 4_dp*bA_i_c*bA_j + 4_dp*Im*bA_i_c*mu_i*p_i*p_j**2 + 2_dp*bA_i_c*p_j**2 - 4_dp*bA_j**2*mu_j**2*p_i**2 - 4_dp*Im*bA_j*mu_j*p_i**2*p_j + 2_dp*bA_j*p_i**2 + p_i**2*p_j**2
-            c1 = -32_dp*bA_i_c**2*bA_j**2*mu_i**2*mu_j - 32_dp*bA_i_c**2*bA_j**2*mu_i*mu_j**2 - 16_dp*Im*bA_i_c**2*bA_j*mu_i**2*p_j - 32_dp*Im*bA_i_c**2*bA_j*mu_i*mu_j*p_j + 16_dp*bA_i_c**2*bA_j*mu_i + 8_dp*bA_i_c**2*mu_i*p_j**2 + 32_dp*Im*bA_i_c*bA_j**2*mu_i*mu_j*p_i + 16_dp*Im*bA_i_c*bA_j**2*mu_j**2*p_i + 16_dp*bA_i_c*bA_j**2*mu_j - 16_dp*bA_i_c*bA_j*mu_i*p_i*p_j - 16_dp*bA_i_c*bA_j*mu_j*p_i*p_j - 8_dp*Im*bA_i_c*bA_j*p_i + 8_dp*Im*bA_i_c*bA_j*p_j - 4_dp*Im*bA_i_c*p_i*p_j**2 + 8_dp*bA_j**2*mu_j*p_i**2 + 4_dp*Im*bA_j*p_i**2*p_j
-            c2 = 16_dp*bA_i_c**2*bA_j**2*mu_i**2 + 64_dp*bA_i_c**2*bA_j**2*mu_i*mu_j + 16_dp*bA_i_c**2*bA_j**2*mu_j**2 + 32_dp*Im*bA_i_c**2*bA_j*mu_i*p_j + 16_dp*Im*bA_i_c**2*bA_j*mu_j*p_j - 8_dp*bA_i_c**2*bA_j - 4_dp*bA_i_c**2*p_j**2 - 16_dp*Im*bA_i_c*bA_j**2*mu_i*p_i - 32_dp*Im*bA_i_c*bA_j**2*mu_j*p_i - 8_dp*bA_i_c*bA_j**2 + 16_dp*bA_i_c*bA_j*p_i*p_j - 4_dp*bA_j**2*p_i**2
-            c3 = 16_dp*bA_i_c*bA_j*(-2_dp*bA_i_c*bA_j*mu_i - 2_dp*bA_i_c*bA_j*mu_j - Im*bA_i_c*p_j + Im*bA_j*p_i)
-            c4 = 16_dp*bA_i_c**2*bA_j**2
-            H2mat(i,j) = 0.25_dp * (c0*Smat(i,j) + c1*Xmat(i,j) + c2*X2mat(i,j) + c3*X3mat(i,j) + c4*X4mat(i,j))
+            in(0) = bA_i_c*bA_j
+            in(1) = p_j**2
+            in(2) = bA_i_c*in(1)
+            in(3) = p_i**2
+            in(4) = bA_j*in(3)
+            in(5) = Im*p_i
+            in(6) = 8.0_dp*in(0)
+            in(7) = in(5)*in(6)
+            in(8) = Im*p_j
+            in(9) = 16.0_dp*in(0)*p_i*p_j
+            in(10) = in(9)*mu_i
+            in(11) = mu_j**2
+            in(12) = bA_j**2
+            in(13) = 8.0_dp*bA_i_c*in(12)
+            in(14) = mu_i**2
+            in(15) = bA_i_c**2
+            in(16) = 8.0_dp*bA_j*in(15)
+            in(17) = 4.0_dp*in(2)*in(5)
+            in(18) = 4.0_dp*in(1)*in(15)
+            in(19) = 4.0_dp*in(12)*in(3)
+            in(20) = 16.0_dp*in(12)
+            in(21) = bA_i_c*in(20)*in(5)
+            in(22) = 16.0_dp*bA_j*in(15)*in(8)
+            in(23) = in(14)*in(22)
+            in(24) = in(15)*in(20)
+            in(25) = in(14)*in(24)
+            in(26) = in(15)*mu_i
+            in(27) = in(26)*mu_j
+            in(28) = 32.0_dp*bA_j*in(8)
+            in(29) = 32.0_dp*in(12)
+            in(30) = in(26)*in(29)
+            in(31) = in(29)*mu_j
+            in(32) = in(15)*in(31)
+            in(33) = in(21)*mu_i
+            in(34) = in(8)*mu_j
+            in(35) = in(12)*mu_j
+            in(36) = 16.0_dp*bA_i_c
+            in(37) = in(15)*mu_i
+            in(38) = Im*bA_j*p_j
+            in(39) = Im*p_i
+
+
+            c(0) = 4.0_dp*in(0) + in(1)*in(3) + in(10)*mu_j - in(11)*in(13) - in(11)*in(19) + in(11)*in(25) - in(11)*in(33) &
+                   - in(14)*in(16) - in(14)*in(18) + in(17)*mu_i + 2.0_dp*in(2) + in(23)*mu_j - 4.0_dp*in(34)*in(4) - in(34)*in(6) + 2.0_dp*in(4) + in(7)*mu_i
+            c(1) = 32.0_dp*bA_i_c*in(35)*in(39)*mu_i + 8.0_dp*bA_i_c*in(38) + 16.0_dp*bA_j*in(37) + 8.0_dp*in(1)*in(37) - in(10) &
+                   + in(11)*in(12)*in(36)*in(39) - in(11)*in(30) - in(14)*in(32) - in(17) - in(23) - in(27)*in(28) + 8.0_dp*in(3)*in(35) + 4.0_dp*in(3)*in(38) + in(35)*in(36) - in(7) - in(9)*mu_j
+            c(2) = -bA_i_c*in(31)*in(5) + in(11)*in(24) + 64.0_dp*in(12)*in(27) - in(13) - in(16) - in(18) - in(19) + in(22)*mu_j + in(25) + in(26)*in(28) - in(33) + in(9)
+            c(3) = 16.0_dp*Im*bA_i_c*in(12)*p_i - in(22) - in(30) - in(32)
+            c(4) = in(24)
+
+
+            H2mat(i,j) = 0.25_dp * (c(0) + c(1)*Xmat(i,j) + c(2)*X2mat(i,j) + c(3)*X3mat(i,j) + c(4)*X4mat(i,j))
 
             ! Potential squared
             H2mat(i,j) = H2mat(i,j) + 0.25_dp * omega**4 *X4mat(i,j) !Very easy
             ! Kinetic times potential
-            c2 = 4_dp*bA_i_c**2*mu_i**2 - 4_dp*Im*bA_i_c*mu_i*p_i - 2_dp*bA_i_c - p_i**2
-            c3 = 4_dp*bA_i_c*(-2_dp*bA_i_c*mu_i + Im*p_i)
-            c4 = 4_dp*bA_i_c**2
-            H2mat(i,j) = H2mat(i,j) - 0.25_dp * (c2*X2mat(i,j) + c3*X3mat(i,j) + c4*X4mat(i,j)) * omega**2 
+            c(5) = 4_dp*bA_i_c**2.0_dp*mu_i**2 - 4_dp*Im*bA_i_c*mu_i*p_i - 2_dp*bA_i_c - p_i**2
+            c(6) = 4_dp*bA_i_c*(-2_dp*bA_i_c*mu_i + Im*p_i)
+            c(7) = 4_dp*bA_i_c**2
+            H2mat(i,j) = H2mat(i,j) - 0.25_dp * (c(5)*X2mat(i,j) + c(6)*X3mat(i,j) + c(7)*X4mat(i,j)) * omega**2 
             ! Potential times kinetic
-            c2 = 4_dp*bA_j**2*mu_j**2 + 4_dp*Im*bA_j*mu_j*p_j - 2_dp*bA_j - p_j**2
-            c3 = 4_dp*bA_j*(-2*bA_j*mu_j - Im*p_j)
-            c4 = 4_dp*bA_j**2
-            H2mat(i,j) = H2mat(i,j) - 0.25_dp * (c2*X2mat(i,j) + c3*X3mat(i,j) + c4*X4mat(i,j)) * omega**2 
+            c(8) = 4_dp*bA_j**2.0_dp*mu_j**2 + 4_dp*Im*bA_j*mu_j*p_j - 2_dp*bA_j - p_j**2
+            c(9) = 4_dp*bA_j*(-2.0_dp*bA_j*mu_j - Im*p_j)
+            c(10) = 4_dp*bA_j**2
+            H2mat(i,j) = H2mat(i,j) - 0.25_dp * (c(8)*X2mat(i,j) + c(9)*X3mat(i,j) + c(10)*X4mat(i,j)) * omega**2 
          end do
       end do
-   deallocate(Smat, Xmat, X2mat, X3mat, X4mat)
+      H2mat=H2mat*Smat ! Don't forget that all matrix elements need to be multiplied with the overlap!
+      deallocate(Smat, Xmat, X2mat, X3mat, X4mat)
    end function H2
 end module ho_kernels
