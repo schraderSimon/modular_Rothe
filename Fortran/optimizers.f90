@@ -8,7 +8,7 @@ subroutine optimize_gradientDescent(solver , time, p_old , c_old,          &
    use RotheSolver_mod               , only : RotheSolver
    implicit none
    class(RotheSolver), intent(inout) :: solver        ! already initialised
-   real(dp)         , intent(in)    :: time             ! start time
+   complex(dp)         , intent(in)    :: time             ! start time
    real(dp)         , intent(in)    :: p_old(:,:)    ! (n,Nb) initial guess
    real(dp)         , intent(in)    :: p_start(:,:)  ! (n,Nb) initial guess for next step
    complex(dp)      , intent(in)    :: c_old(:)       ! previous coeffs
@@ -72,7 +72,7 @@ subroutine optimize_LBFGS (solver , time, p_old , c_old,           &
    use RotheSolver_mod               , only : RotheSolver
    implicit none
    class(RotheSolver) , intent(inout) :: solver
-   real(dp)           , intent(in)    :: time
+   complex(dp)           , intent(in)    :: time
    real(dp)           , intent(in)    :: p_old(:,:)     
    complex(dp)        , intent(in)    :: c_old(:)
    real(dp)           , intent(in)    :: p_start(:,:)    ! initial guess
@@ -179,7 +179,7 @@ subroutine propagate_Nsteps(solver, t0, p_init, c_init,n_steps, p_out,c_out, err
    use RotheSolver_mod               , only : RotheSolver
    implicit none
    class(RotheSolver), intent(inout) :: solver        
-   real(dp)         , intent(in)    :: t0             ! start time
+   complex(dp)         , intent(in)    :: t0             ! start time
    real(dp)         , intent(in)    :: p_init(:,:)    ! (n,Nb) initial guess
    complex(dp)      , intent(in)    :: c_init(:)       ! previous coeffs
    integer          , intent(in)    :: n_steps    ! number of steps to propagate
@@ -193,7 +193,8 @@ subroutine propagate_Nsteps(solver, t0, p_init, c_init,n_steps, p_out,c_out, err
    real(dp), intent(in), optional   :: learning_rate       
    logical , intent(in), optional   :: verbose       
    integer                :: n_par1, n_par2, iteration, niter, max_iterations
-   real(dp)               :: err_new, time, dx, lr
+   real(dp)               :: err_new, dx, lr
+   complex(dp) :: time
    logical :: talk
    real(dp), allocatable  :: p_old(:,:), p_new(:,:), p_startguess(:,:)
    complex(dp), allocatable :: c_new(:), c_old(:)

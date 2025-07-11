@@ -13,7 +13,8 @@ module RotheSolver_mod
       end function matrix_func
       function matrix_func_t(p, t) result(mat)
          import dp
-         real(dp), intent(in)  :: p(:,:), t
+         real(dp), intent(in)  :: p(:,:)
+         complex(dp), intent(in) :: t ! time parameter is complex in order to allow imaginary time evolution
          complex(dp), allocatable :: mat(:,:)
       end function matrix_func_t
    end interface
@@ -22,7 +23,7 @@ module RotheSolver_mod
    type :: RotheSolver
       real(dp),  allocatable :: p(:,:)          ! (n, Nb)  nonlinear
       complex(dp), allocatable :: c(:)          ! (n)      linear
-      real(dp) :: dt
+      complex(dp) :: dt
       character(len=:), allocatable :: name
       procedure(matrix_func), pointer, nopass :: S  => null()
       procedure(matrix_func_t), pointer, nopass :: H  => null()
@@ -36,7 +37,7 @@ module RotheSolver_mod
 contains
 subroutine init(self, dt, name,S_cb, H_cb, H2_cb)
    class(RotheSolver), intent(inout) :: self
-   real(dp),          intent(in)    :: dt
+   complex(dp),          intent(in)    :: dt
    character(*),      intent(in)    :: name
    procedure(matrix_func) , pointer       :: S_cb
    procedure(matrix_func_t) , pointer       :: H_cb, H2_cb
@@ -50,7 +51,7 @@ end subroutine init
 
 function RS_error(self, t, p_old,c_old,p_new,c_new) result(err)
    class(RotheSolver), intent(in)    :: self
-   real(dp),           intent(in)    :: t
+   complex(dp),           intent(in)    :: t
    real(dp),           intent(in)    :: p_new(:,:), p_old(:,:)     ! (n,Nb)
    complex(dp),        intent(in)    :: c_old(:)                    ! (n)
    complex(dp), intent(out)   :: c_new (:)   ! (n) and reshaped to (n,1)
@@ -119,7 +120,7 @@ function RS_error(self, t, p_old,c_old,p_new,c_new) result(err)
 end function RS_error
 function RS_gradient_numerical(self, t, p_old, c_old, p_new) result(grad)
    class(RotheSolver), intent(in)    :: self
-   real(dp),           intent(in)    :: t
+   complex(dp),           intent(in)    :: t
    real(dp),           intent(in)    :: p_new(:,:), p_old(:,:)     ! (n,Nb)
    complex(dp),        intent(in)    :: c_old(:)                    ! (n)
    complex(dp), allocatable   :: c_new (:)

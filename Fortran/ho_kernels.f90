@@ -2,7 +2,7 @@ module ho_kernels
    use, intrinsic :: iso_fortran_env, only : dp => real64
    implicit none
    private
-   public :: S, x, x2, H, H2, x3, x4, dS
+   public :: S,  H, H2, dS
    real(dp), parameter         :: pi = 3.141592653589793238462643383279502884197169399375_dp
    complex(dp), parameter      :: Im = (0.0_dp, 1.0_dp)
 !! Parameters you don’t want to thread through every call
@@ -10,6 +10,24 @@ module ho_kernels
 
 contains
 !────────────── overlap S ──────────────
+   pure subroutine moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
+      complex(dp), intent(in)  :: bA_i, bA_j
+      real(dp),    intent(in)  :: mu_i, mu_j, p_i, p_j
+      complex(dp), intent(out) :: alpha, alpha2, alpha3, beta, beta2, beta4, alpha4, alpha5, alpha6
+      alpha  = conjg(bA_i) + bA_j
+      alpha2=alpha*alpha
+      alpha3=alpha2*alpha
+      alpha2 = alpha*alpha
+      alpha3 = alpha2*alpha
+      alpha4 = alpha3*alpha
+      alpha5 = alpha4*alpha
+      alpha6 = alpha5*alpha
+      beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j - p_i)
+      beta2  = beta*beta
+      beta4  = beta2*beta2
+   end subroutine moments
+
    function S(p) result(Smat)
       real(dp),    intent(in)     :: p(:,:)          ! (n,4), the parameters of the polynomial
       complex(dp), allocatable    :: Smat(:,:)       ! (n,n), the overlap matrix
@@ -59,183 +77,126 @@ contains
       end do
       deallocate(normalizations)
    end function S
-    
-   function x(p) result(Xmat)
+   function xn(p,order) result(mat)
       real(dp),    intent(in)  :: p(:,:)       ! (n,4)
-      complex(dp), allocatable :: Xmat(:,:)   ! (n,n)
-      complex(dp), allocatable :: Smat(:,:)
-      integer :: n, i, j
-      complex(dp) :: bA_i,bA_j, alpha,beta, fact
-      real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
-
-      n = size(p,1)
-      allocate(Xmat(n,n))
-
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-
-            fact = beta / (2.0_dp*alpha)
-            Xmat(i,j) = fact
-            Xmat(j,i) = conjg(Xmat(i,j))
-         end do
-      end do
-
-   end function x
-
-
-    function x2(p) result(X2mat)
-      real(dp),    intent(in)  :: p(:,:)       ! (n,4)
-      complex(dp), allocatable :: X2mat(:,:)   ! (n,n)
-      complex(dp), allocatable :: Smat(:,:)
-      integer :: n, i, j
-      complex(dp) :: bA_i,bA_j, alpha,beta, fact
-      real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
-
-      n = size(p,1)
-      allocate(X2mat(n,n))
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-            !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
-
-            fact = beta**2/(4.0_dp*alpha**2) + 1.0_dp/(2.0_dp*alpha)
-            X2mat(i,j) =  fact
-            X2mat(j,i) = conjg(X2mat(i,j))
-         end do
-      end do
-
-   end function x2
-
-
-   function x3(p) result(X3mat)
-      real(dp),    intent(in)  :: p(:,:)       ! (n,4)
-      complex(dp), allocatable :: X3mat(:,:)   ! (n,n)
-      complex(dp), allocatable :: Smat(:,:)
-      integer :: n, i, j
-      complex(dp) :: bA_i,bA_j, alpha,beta, fact
-      real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
-
-      n = size(p,1)
-      allocate(X3mat(n,n))
-
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-            !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
-
-            fact = 3.0_dp/4.0_dp * beta/(alpha**2) + 1.0_dp/8.0_dp* (beta/alpha)**3
-            X3mat(i,j) =  fact
-            X3mat(j,i) = conjg(X3mat(i,j))
-         end do
-      end do
-
-   end function x3
-
-
-   function x4(p) result(mat)
-      real(dp),    intent(in)  :: p(:,:)       ! (n,4)
+      integer,     intent(in)  :: order        ! Order of the polynomial
       complex(dp), allocatable :: mat(:,:)   ! (n,n)
       integer :: n, i, j
       complex(dp) :: bA_i,bA_j, alpha,beta, fact
+      complex(dp) :: alpha2,alpha3,alpha4,alpha5,alpha6, beta2,beta4
       real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
 
       n = size(p,1)
       allocate(mat(n,n))
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
+      select case (order)
+         case (1)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
 
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-            !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
-            fact = 3.0_dp/(4.0_dp*alpha**2) + 3.0_dp*beta**2/(4.0_dp*alpha**3) + beta**4/(16.0_dp*alpha**4)
-            mat(i,j) = fact
-            mat(j,i) = conjg(mat(i,j))
-         end do
-      end do
-   end function x4
-   function x5(p) result(mat)
-      real(dp),    intent(in)  :: p(:,:)       ! (n,4)
-      complex(dp), allocatable :: mat(:,:)   ! (n,n)
-      integer :: n, i, j
-      complex(dp) :: bA_i,bA_j, alpha,beta, fact
-      real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
+                  fact = beta / (2.0_dp*alpha)
+                  mat(i,j) = fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+          end do
+         case (2)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
 
-      n = size(p,1)
-      allocate(mat(n,n))
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-            !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
+                  fact = beta2/(4.0_dp*alpha2) + 1.0_dp/(2.0_dp*alpha)
+                  mat(i,j) =  fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+            end do
+         case (3)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
 
-            fact = 15.0_dp*beta/(8.0_dp*alpha**3) + 5.0_dp*beta**3/(8.0_dp*alpha**4) + beta**5/(32.0_dp*alpha**5)
-            mat(i,j) = fact
-            mat(j,i) = conjg(mat(i,j))
-         end do
-      end do
-   end function x5
-   function x6(p) result(mat)
-      real(dp),    intent(in)  :: p(:,:)       ! (n,4)
-      complex(dp), allocatable :: mat(:,:)   ! (n,n)
-      integer :: n, i, j
-      complex(dp) :: bA_i,bA_j, alpha,beta, fact
-      real(dp) :: a_i,b_i,mu_i,p_i, a_j,b_j,mu_j,p_j
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
-      n = size(p,1)
-      allocate(mat(n,n))
-      do j=1,n
-         a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
-         bA_j = cmplx(a_j**2,b_j,kind=dp)
-         do i=1,j
-            a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
-            bA_i = cmplx(a_i**2,b_i,kind=dp);      
+                  fact = 3.0_dp/4.0_dp * beta/(alpha2) + 1.0_dp/8.0_dp* (beta2*beta/alpha3)
+                  mat(i,j) =  fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+            end do
 
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j-p_i)
-            !gamma = -(conjg(bA_i)*mu_i**2 + bA_j*mu_j**2) + Im*(p_i*mu_i - p_j*mu_j)
+         case (4)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
 
-            fact = 15.0_dp/(8.0_dp*alpha**3) + 45.0_dp*beta**2/(16.0_dp*alpha**4) + 15.0_dp*beta**4/(32.0_dp*alpha**5) + beta**6/(64.0_dp*alpha**6)
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
+                  fact = 3.0_dp/(4.0_dp*alpha2) + 3.0_dp*beta2/(4.0_dp*alpha3) + beta4/(16.0_dp*alpha4)
+                  mat(i,j) = fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+            end do
+         case (5)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
 
-            mat(i,j) = fact
-            mat(j,i) = conjg(mat(i,j))
-         end do
-      end do
-   end function x6
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
+                  fact = 15.0_dp*beta/(8.0_dp*alpha3) + 5.0_dp*beta2*beta/(8.0_dp*alpha4) + beta**5/(32.0_dp*alpha5)
+                  mat(i,j) = fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+            end do
+         case (6)
+            do j=1,n
+               a_j = p(j,1); b_j = p(j,2); mu_j = p(j,3); p_j = p(j,4)
+               bA_j = cmplx(a_j**2,b_j,kind=dp)
+               do i=1,j
+                  a_i = p(i,1); b_i = p(i,2); mu_i = p(i,3); p_i = p(i,4)
+                  bA_i = cmplx(a_i**2,b_i,kind=dp);      
+
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
+
+                  fact = 15.0_dp/(8.0_dp*alpha3) + 45.0_dp*beta2/(16.0_dp*alpha4) + 15.0_dp*beta4/(32.0_dp*alpha5) + beta2*beta4/(64.0_dp*alpha6)
+
+                  mat(i,j) = fact
+                  mat(j,i) = conjg(mat(i,j))
+               end do
+            end do
+         case default 
+            print *, "Error: Unsupported order for xn function. Supported orders are 1 to 6."
+            stop
+      end select
+   end function xn
 
    function H(p,t) result(Hmat)
       use, intrinsic :: iso_fortran_env, only : dp => real64
       implicit none
-      real(dp),    intent(in)  :: p(:,:), t
+      real(dp),    intent(in)  :: p(:,:)
+      complex(dp), intent(in) :: t
       complex(dp), allocatable :: Hmat(:,:)
       !– helper matrices already coded –
       complex(dp), allocatable :: Smat(:,:), Xmat(:,:), X2mat(:,:)
@@ -248,8 +209,8 @@ contains
       allocate(Smat(n,n), Xmat(n,n), X2mat(n,n), Hmat(n,n))
 
       Smat = S (p)      ! ⟨g_i|g_j⟩
-      Xmat = x (p)*Smat      ! ⟨g_i|x|g_j⟩
-      X2mat = x2(p)*Smat     ! ⟨g_i|x²|g_j⟩
+      Xmat = xn (p,1)*Smat      ! ⟨g_i|x|g_j⟩
+      X2mat = xn(p,2)*Smat     ! ⟨g_i|x²|g_j⟩
 
       do j = 1, n                      ! column → parameters of |g_j⟩
          a_j  = p(j,1);  b_j = p(j,2)
@@ -274,7 +235,8 @@ contains
    function H2(p,t) result(H2mat)
       use, intrinsic :: iso_fortran_env, only : dp => real64
       implicit none
-      real(dp),    intent(in)  :: p(:,:),t
+      real(dp),    intent(in)  :: p(:,:)
+      complex(dp), intent(in) :: t
       complex(dp), allocatable :: H2mat(:,:)
       !– helper matrices already coded –
       complex(dp), allocatable :: Smat(:,:), Xmat(:,:), X2mat(:,:), X3mat(:,:), X4mat(:,:)
@@ -286,10 +248,10 @@ contains
       n = size(p,1)
       allocate(Smat(n,n), Xmat(n,n), X2mat(n,n), X3mat(n,n), X4mat(n,n), H2mat(n,n))
       Smat = S (p)      ! ⟨g_i|g_j⟩
-      Xmat = x (p)!*Smat      ! ⟨g_i|x|g_j⟩
-      X2mat = x2(p)!*Smat     ! ⟨g_i|x²|g_j⟩
-      X3mat = x3(p)!*Smat
-      X4mat = x4(p)!*Smat
+      Xmat = xn (p,1)!*Smat      ! ⟨g_i|x|g_j⟩
+      X2mat = xn(p,2)!*Smat     ! ⟨g_i|x²|g_j⟩
+      X3mat = xn(p,3)!*Smat
+      X4mat = xn(p,4)!*Smat
       do j= 1, n
          a_j  = p(j,1);  b_j = p(j,2)
          mu_j = p(j,3);  p_j = p(j,4)
@@ -373,20 +335,25 @@ contains
    end function H2
 
 
-   function dS(p) result(dSmat)
+   function dS(p,Smat_in) result(dSmat)
       use, intrinsic :: iso_fortran_env, only : dp => real64
       implicit none
       real(dp),    intent(in)  :: p(:,:)              ! (n,4)
+      complex(dp), intent(in), optional, target :: Smat_in(:,:)      ! (n,n)
+      complex(dp), pointer          :: Smat(:,:)
       complex(dp), allocatable :: dSmat(:,:,:)        ! (n,n,4)
 
       integer :: n, i, j
       real(dp) :: a_i,b_i,mu_i,p_i,  a_j,b_j,mu_j,p_j
       complex(dp) :: bA_i,bA_j, alpha,beta, Sij, dlog(4)
-      complex(dp), allocatable :: Smat(:,:)
       n = size(p,1)
-      allocate(Smat(n,n))
+      if (present(Smat_in)) then
+         Smat => Smat_in             ! alloc/copy handled automatically
+      else
+         allocate(Smat(n,n))
+         Smat = S(p)
+      end if
       allocate(dSmat(n,n,4))
-      Smat=S(p)
       do i = 1, n
          a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
          bA_i = cmplx(a_i**2, b_i, kind=dp)
@@ -417,198 +384,163 @@ contains
       do i = 1, n
          dSmat(i,i,:) = dSmat(i,i,:) + conjg(dSmat(i,i,:))
       end do
-      deallocate(Smat)
+      if (.not. present(Smat_in))  deallocate(Smat)
    end function dS
 
 
-   function dX(p) result(dXmat)
+   function dXn(p, order, Smat_in, dSmat_in) result(dXmat)
       use, intrinsic :: iso_fortran_env, only : dp => real64
       implicit none
-      real(dp),    intent(in)  :: p(:,:)              ! (n,4)
-      complex(dp), allocatable :: dXmat(:,:,:) , dSmat(:,:,:)  , dprefac(:,:,:)     ! (n,n,4)
+
+      ! ---- dummy arguments -------------------------------------------------
+      complex(dp), allocatable       :: dXmat(:,:,:), dprefac(:,:,:) ! (n,n,4)
+      real(dp), intent(in)           :: p(:,:)            ! (n,4)
+      integer, intent(in)           :: order            ! order of the derivative
+      complex(dp), intent(in), optional, target :: Smat_in(:,:)      ! (n,n)
+      complex(dp), intent(in), optional, target :: dSmat_in(:,:,:)   ! (n,n,4)
+
+      ! ---- local working arrays -------------------------------------------
+      complex(dp), pointer          :: Smat(:,:), dSmat(:,:,:)
+
       integer :: n, i, j
       real(dp) :: a_i,b_i,mu_i,p_i,  a_j,b_j,mu_j,p_j
-      complex(dp) :: bA_i,bA_j, alpha,beta, Sij
-      complex(dp), allocatable :: Smat(:,:)
+      complex(dp) :: bA_i,bA_j, alpha, beta, alpha2, beta2,alpha3, alpha4, beta4, alpha5, alpha6
+
+      ! ---------------------------------------------------------------------
       n = size(p,1)
-      allocate(Smat(n,n))
-      allocate(dXmat(n,n,4),dSmat(n,n,4),dprefac(n,n,4))
-      Smat=S(p)
-      dSmat=dS(p)
-      do  j= 1, n
-         a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
-         bA_j = cmplx(a_j**2, b_j, kind=dp)
 
-         do i= 1, n
-            a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
-            bA_i = cmplx(a_i**2, b_i, kind=dp)
+      ! --- S matrix ---------------------------------------------------------
+      if (present(Smat_in)) then
+         Smat => Smat_in             ! alloc/copy handled automatically
+      else
+         allocate(Smat(n,n))
+         Smat = S(p)
+      end if
 
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j - p_i)
+      ! --- dS matrix --------------------------------------------------------
+      if (present(dSmat_in)) then
+         dSmat => dSmat_in
+      else
+         allocate(dSmat(n,n,4))
+         dSmat = dS(p)
+      end if
 
-            Sij = Smat(i,j)
-            dXmat(i,j,:)=beta / (2.0_dp*alpha)*dSmat(i,j,:) ! prefac * dS_ij/dpj
-            ! Calculate prefac derivatives
-            dprefac(i,j,1) = a_j*(2.0_dp*alpha*mu_j - beta)/alpha**2
-            dprefac(i,j,2)  =  Im*(alpha*mu_j - 0.5_dp*beta)/alpha**2
-            dprefac(i,j,3)  =  (a_j**2 + Im*b_j)/alpha
-            dprefac(i,j,4)  =  0.5_dp*Im/alpha
+      ! --- arrays we *always* need -----------------------------------------
+      allocate(dXmat(n,n,4), dprefac(n,n,4))
+      select case (order)
+         case(1)
+            do  j= 1, n
+               a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
+               bA_j = cmplx(a_j**2, b_j, kind=dp)
 
-         end do
-      end do
-      do i = 1,n
-         dprefac(i,i,:)=dprefac(i,i,:) + conjg(dprefac(i,i,:))
-      end do
-      do i = 1,n
-         do j =1,n
-            dXmat(i,j,:)=dXmat(i,j,:)+dprefac(i,j,:)*Smat(i,j)
-         end do
-      end do
-      deallocate(Smat,dSmat,dprefac)
-   end function dX
+               do i= 1, n
+                  a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
+                  bA_i = cmplx(a_i**2, b_i, kind=dp)
 
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
+                  dXmat(i,j,:)=beta / (2.0_dp*alpha)*dSmat(i,j,:) ! prefac * dS_ij/dpj
+                  ! Calculate prefac derivatives
+                  dprefac(i,j,1) = a_j*(2.0_dp*alpha*mu_j - beta)/alpha**2
+                  dprefac(i,j,2)  =  Im*(alpha*mu_j - 0.5_dp*beta)/alpha**2
+                  dprefac(i,j,3)  =  bA_j/alpha
+                  dprefac(i,j,4)  =  0.5_dp*Im/alpha
 
+               end do
+            end do
+         case(2)
+            do  j= 1, n
+               a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
+               bA_j = cmplx(a_j**2, b_j, kind=dp)
 
+               do i= 1, n
+                  a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
+                  bA_i = cmplx(a_i**2, b_i, kind=dp)
 
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
+                  dprefac(i,j,1)  =  a_j*(2.0_dp*alpha*beta*mu_j - alpha - beta2)/alpha3
+                  dprefac(i,j,2)  =  Im*(2.0_dp*alpha*beta*mu_j - alpha - beta2)/(2.0_dp*alpha3)
+                  dprefac(i,j,3)  =  beta*bA_j/alpha2
+                  dprefac(i,j,4)  =  Im*beta/(2.0_dp*alpha2)
+                  dXmat(i,j,:)=(beta2/(4.0_dp*alpha2) + 1.0_dp/(2.0_dp*alpha))*dSmat(i,j,:) ! prefac * dS_ij/dpj
 
+               end do
+            end do
+         case(3)
+            do  j= 1, n
+               a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
+               bA_j = cmplx(a_j**2, b_j, kind=dp)
 
+               do i= 1, n
+                  a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
+                  bA_i = cmplx(a_i**2, b_i, kind=dp)
 
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
+                  dprefac(i,j,1)  =  3.0_dp*a_j*(2.0_dp*alpha*mu_j*(2.0_dp*alpha + beta2) - beta*(4.0_dp*alpha + beta2))/(4.0_dp*alpha4)
+                  dprefac(i,j,2)  =  3.0_dp*Im*(2.0_dp*alpha*mu_j*(2.0_dp*alpha + beta2) - beta*(4.0_dp*alpha + beta2))/(8.0_dp*alpha4)
+                  dprefac(i,j,3)  =  3.0_dp*bA_j*(2.0_dp*alpha + beta2)/(4.0_dp*alpha3)
+                  dprefac(i,j,4)  =  3.0_dp*Im*(2.0_dp*alpha + beta2)/(8.0_dp*alpha3)
+                  dXmat(i,j,:) = (3.0_dp/4.0_dp * beta/(alpha**2) + 1.0_dp/8.0_dp* (beta/alpha)**3)*dSmat(i,j,:) ! prefac * dS_ij/dpj
 
+               end do
+            end do
+         case(4)
+            do  j= 1, n
+               a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
+               bA_j = cmplx(a_j**2, b_j, kind=dp)
+               do i= 1, n
+                  a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
+                  bA_i = cmplx(a_i**2, b_i, kind=dp)
 
+                  call moments(bA_i, bA_j, mu_i, mu_j, p_i, p_j, &
+                           alpha, alpha2, alpha3,alpha4,alpha5,alpha6, beta, beta2,beta4)
 
-
-
-   function dX2(p) result(dX2mat)
-      use, intrinsic :: iso_fortran_env, only : dp => real64
-      implicit none
-      real(dp),    intent(in)  :: p(:,:)              ! (n,4)
-      complex(dp), allocatable :: dX2mat(:,:,:) , dSmat(:,:,:)  , dprefac(:,:,:)     ! (n,n,4)
-      integer :: n, i, j
-      real(dp) :: a_i,b_i,mu_i,p_i,  a_j,b_j,mu_j,p_j
-      complex(dp) :: bA_i,bA_j, alpha,beta, Sij
-      complex(dp), allocatable :: Smat(:,:)
-      n = size(p,1)
-      allocate(Smat(n,n))
-      allocate(dX2mat(n,n,4),dSmat(n,n,4),dprefac(n,n,4))
-      Smat=S(p)
-      dSmat=dS(p)
-      do  j= 1, n
-         a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
-         bA_j = cmplx(a_j**2, b_j, kind=dp)
-
-         do i= 1, n
-            a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
-            bA_i = cmplx(a_i**2, b_i, kind=dp)
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j - p_i)
-            dprefac(i,j,1)  =  a_j*(2.0_dp*alpha*beta*mu_j - alpha - beta**2)/alpha**3
-            dprefac(i,j,2)  =  Im*(2.0_dp*alpha*beta*mu_j - alpha - beta**2)/(2.0_dp*alpha**3)
-            dprefac(i,j,3)  =  beta*(a_j**2 + Im*b_j)/alpha**2
-            dprefac(i,j,4)  =  Im*beta/(2.0_dp*alpha**2)
-
-            Sij = Smat(i,j)
-            dX2mat(i,j,:)=(beta**2/(4.0_dp*alpha**2) + 1.0_dp/(2.0_dp*alpha))*dSmat(i,j,:) ! prefac * dS_ij/dpj
-
-         end do
-      end do
-      do i = 1,n
-         dprefac(i,i,:)=dprefac(i,i,:) + conjg(dprefac(i,i,:))
-      end do
-      do i = 1,n
-         do j =1,n
-            dX2mat(i,j,:)=dX2mat(i,j,:)+dprefac(i,j,:)*Smat(i,j)
-         end do
-      end do
-      deallocate(Smat,dSmat,dprefac)
-   end function dX2
-   function dX3(p) result(dX3mat)
-      use, intrinsic :: iso_fortran_env, only : dp => real64
-      implicit none
-      real(dp),    intent(in)  :: p(:,:)              ! (n,4)
-      complex(dp), allocatable :: dX3mat(:,:,:) , dSmat(:,:,:)  , dprefac(:,:,:)     ! (n,n,4)
-      integer :: n, i, j
-      real(dp) :: a_i,b_i,mu_i,p_i,  a_j,b_j,mu_j,p_j
-      complex(dp) :: bA_i,bA_j, alpha,beta, Sij
-      complex(dp), allocatable :: Smat(:,:)
-      n = size(p,1)
-      allocate(Smat(n,n))
-      allocate(dX3mat(n,n,4),dSmat(n,n,4),dprefac(n,n,4))
-      Smat=S(p)
-      dSmat=dS(p)
-      do  j= 1, n
-         a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
-         bA_j = cmplx(a_j**2, b_j, kind=dp)
-
-         do i= 1, n
-            a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
-            bA_i = cmplx(a_i**2, b_i, kind=dp)
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j - p_i)
-            dprefac(i,j,1)  =  3.0_dp*a_j*(2.0_dp*alpha*mu_j*(2.0_dp*alpha + beta**2) - beta*(4.0_dp*alpha + beta**2))/(4.0_dp*alpha**4)
-            dprefac(i,j,2)  =  3.0_dp*Im*(2.0_dp*alpha*mu_j*(2.0_dp*alpha + beta**2) - beta*(4.0_dp*alpha + beta**2))/(8.0_dp*alpha**4)
-            dprefac(i,j,3)  =  3.0_dp*(a_j**2 + Im*b_j)*(2.0_dp*alpha + beta**2)/(4.0_dp*alpha**3)
-            dprefac(i,j,4)  =  3.0_dp*Im*(2.0_dp*alpha + beta**2)/(8.0_dp*alpha**3)
-            
-            Sij = Smat(i,j)
-            dX3mat(i,j,:) = (3.0_dp/4.0_dp * beta/(alpha**2) + 1.0_dp/8.0_dp* (beta/alpha)**3)*dSmat(i,j,:) ! prefac * dS_ij/dpj
-
-         end do
-      end do
-      do i = 1,n
-         dprefac(i,i,:)=dprefac(i,i,:) + conjg(dprefac(i,i,:))
-      end do
-      do i = 1,n
-         do j =1,n
-            dX3mat(i,j,:)=dX3mat(i,j,:)+dprefac(i,j,:)*Smat(i,j)
-         end do
-      end do
-      deallocate(Smat,dSmat,dprefac)
-   end function dX3
-   function dX4(p) result(dX4mat)
-      use, intrinsic :: iso_fortran_env, only : dp => real64
-      implicit none
-      real(dp),    intent(in)  :: p(:,:)              ! (n,4)
-      complex(dp), allocatable :: dX4mat(:,:,:) , dSmat(:,:,:)  , dprefac(:,:,:)     ! (n,n,4)
-      integer :: n, i, j
-      real(dp) :: a_i,b_i,mu_i,p_i,  a_j,b_j,mu_j,p_j
-      complex(dp) :: bA_i,bA_j, alpha,beta, Sij
-      complex(dp), allocatable :: Smat(:,:)
-      n = size(p,1)
-      allocate(Smat(n,n))
-      allocate(dX4mat(n,n,4),dSmat(n,n,4),dprefac(n,n,4))
-      Smat=S(p)
-      dSmat=dS(p)
-      do  j= 1, n
-         a_j = p(j,1);  b_j = p(j,2);  mu_j = p(j,3);  p_j = p(j,4)
-         bA_j = cmplx(a_j**2, b_j, kind=dp)
-
-         do i= 1, n
-            a_i = p(i,1);  b_i = p(i,2);  mu_i = p(i,3);  p_i = p(i,4)
-            bA_i = cmplx(a_i**2, b_i, kind=dp)
-
-            alpha = conjg(bA_i) + bA_j
-            beta  = 2.0_dp*(conjg(bA_i)*mu_i + bA_j*mu_j) + Im*(p_j - p_i)
-            dprefac(i,j,1)  =  -a_j*(6.0_dp*alpha**2 + 9.0_dp*alpha*beta**2 - 2.0_dp*alpha*beta*mu_j*(6.0_dp*alpha + beta**2) + beta**4)/(2.0_dp*alpha**5)
-            dprefac(i,j,2)  =  Im*(-6.0_dp*alpha**2 - 9.0_dp*alpha*beta**2 + 2.0_dp*alpha*beta*mu_j*(6.0_dp*alpha + beta**2) - beta**4)/(4.0_dp*alpha**5)
-            dprefac(i,j,3)  =  beta*(a_j**2 + Im*b_j)*(6.0_dp*alpha + beta**2)/(2.0_dp*alpha**4)
-            dprefac(i,j,4)  =  Im*beta*(6.0_dp*alpha + beta**2)/(4.0_dp*alpha**4)
-            
-            Sij = Smat(i,j)
-            dX4mat(i,j,:) = (12.0_dp*alpha**2 + 12.0_dp*alpha*beta**2 + beta**4)/(16.0_dp*alpha**4)*dSmat(i,j,:) ! prefac * dS_ij/dpj
-
-         end do
-      end do
+                  dprefac(i,j,1)  =  -a_j*(6.0_dp*alpha2 + 9.0_dp*alpha*beta2 - 2.0_dp*alpha*beta*mu_j*(6.0_dp*alpha + beta2) + beta4)/(2.0_dp*alpha5)
+                  dprefac(i,j,2)  =  Im*(-6.0_dp*alpha2 - 9.0_dp*alpha*beta2 + 2.0_dp*alpha*beta*mu_j*(6.0_dp*alpha + beta2) - beta4)/(4.0_dp*alpha5)
+                  dprefac(i,j,3)  =  beta*bA_j*(6.0_dp*alpha + beta2)/(2.0_dp*alpha4)
+                  dprefac(i,j,4)  =  Im*beta*(6.0_dp*alpha + beta2)/(4.0_dp*alpha4)
+                  dXmat(i,j,:) = (12.0_dp*alpha2 + 12.0_dp*alpha*beta2 + beta4)/(16.0_dp*alpha4)*dSmat(i,j,:) ! prefac * dS_ij/dpj
+               end do
+            end do
+         case default
+            write(*,*) "dXn: order not implemented"
+            stop 1
+      end select
+      
       do i = 1,n
          dprefac(i,i,:)=dprefac(i,i,:) + conjg(dprefac(i,i,:))
       end do
       do j = 1,n
          do i =1,n
-            dX4mat(i,j,:)=dX4mat(i,j,:)+dprefac(i,j,:)*Smat(i,j)
+            dXmat(i,j,:)=dXmat(i,j,:)+dprefac(i,j,:)*Smat(i,j)
          end do
       end do
-      deallocate(Smat,dSmat,dprefac)
-   end function dX4
+      if (.not. present(Smat_in))  deallocate(Smat)
+      if (.not. present(dSmat_in)) deallocate(dSmat)
+      deallocate(dprefac)   ! always ours   end function dX2
+   end function dXn
+  function dH(p,t) result(dHmat)
+      use, intrinsic :: iso_fortran_env, only : dp => real64
+      implicit none
+      real(dp),    intent(in)  :: p(:,:)
+      complex(dp), intent(in) :: t
+      complex(dp), allocatable :: dHmat(:,:,:) ! (n,n,4)
+      complex(dp), allocatable :: dSmat(:,:,:), dXmat(:,:,:), dX2mat(:,:,:)
+      complex(dp), allocatable :: Smat(:,:), Xmat(:,:), X2mat(:,:)
+      integer :: n, i, j
+
+      n = size(p,1)
+      allocate(Smat(n,n), dSmat(n,n,4))
+      Smat= S(p) ! (n,n)
+      dSmat = dS(p,Smat) ! 
+      Xmat = xn(p,1)*Smat ! (n,n)
+      X2mat = xn(p,2)*Smat ! (n,n)
+      allocate(dXmat(n,n,4), dX2mat(n,n,4))
+      dXmat = dXn(p,1,Smat,dSmat) ! (n,n,4)
+      dX2mat = dXn(p,2,Smat,dSmat) !
+   deallocate(Smat,Xmat,X2mat,dSmat,dXmat)
+   end function dH
 end module ho_kernels

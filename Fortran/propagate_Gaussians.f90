@@ -15,7 +15,8 @@ program test_eval_RotheError
       end function matf
       function matft(p, t) result(mat)
          import dp
-         real(dp), intent(in)  :: p(:,:), t
+         real(dp), intent(in)  :: p(:,:)
+         complex(dp), intent(in) :: t ! time parameter is complex in order to allow imaginary time evolution
          complex(dp), allocatable :: mat(:,:)
       end function matft
    end interface
@@ -35,7 +36,9 @@ program test_eval_RotheError
    real(dp), allocatable :: errors(:), times(:)
    complex(dp), allocatable :: gradient(:,:)
    type(RotheSolver)  :: solver
-   real(dp) :: dt = 0.01_dp, t0 = 0.0_dp, err, err_old
+   complex(dp) :: dt = (0.01_dp,0.0_dp)
+   real (dp) :: err, err_old
+   complex(dp) :: t0 = (0.0_dp, 0.0_dp)  ! initial time
 
    a=1.0_dp/sqrt(3.0_dp)
    b=0.1_dp
