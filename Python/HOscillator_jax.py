@@ -11,6 +11,7 @@ import numpy as np
 from scipy.optimize import minimize
 logpi = jnp.log(jnp.pi)
 import numpy as np
+import jax.lax as lax
 class ND_potentials:
     def __init__(self, params, K_max=4):
         """

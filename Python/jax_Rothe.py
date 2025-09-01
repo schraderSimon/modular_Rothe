@@ -60,10 +60,10 @@ class RotheSolver:
 
         x0 = self.p_init.ravel()
         hess_inv=np.eye(len(x0)) #Initial Hessian
-        #hess_inv=np.diag(1/(abs(g_only(x0)+1e-14))) #Preconditioner
-        
+        #hess_inv=np.diag(1/(abs(g_only(x0))+1e-14)) #Preconditioner
+        #hess_inv = np.eye(len(x0))/jnp.linalg.norm(g_only(x0)) #Preconditioner
         solution = minimize(f_only, x0, jac=g_only, method='BFGS',
-                            options={'gtol': 1e-14, 'maxiter': maxiter,"disp":True,"hess_inv0":hess_inv})
+                            options={'gtol': 1e-14, 'maxiter': maxiter,"disp":False,"hess_inv0":hess_inv})
         niter = solution.nfev
         p_solved = solution.x.reshape(self.p_init.shape)
 
@@ -71,7 +71,7 @@ class RotheSolver:
             jnp.asarray(p_solved), self.p_old, self.c_old, self.SHH2, self.t, self.dt, return_cnew=True
         )
         return p_solved, c_new, float(final_RE), niter
-    def propagate(self,num_iterations,p_init=None,c_init=None):
+    def propagate(self,num_iterations,p_init=None,c_init=None,maxiter=100):
         if p_init is not None:
             self.p_old = jnp.asarray(p_init)
         if c_init is not None:
@@ -80,21 +80,23 @@ class RotheSolver:
         for i in range(num_iterations):
             self.t += self.dt
             start=time.time()
-            p_solved, c_new, final_RE, nit = self.find_next_timestep_solution(startguess)
+            p_solved, c_new, final_RE, nit = self.find_next_timestep_solution(startguess,maxiter=maxiter)
             print(f"Step {i}: Rothe error: {final_RE}, Number of iterations: {nit}")
             startguess = 2*p_solved-self.p_old
+            startguess = p_solved
             self.p_old = p_solved
             self.c_old = c_new
             end=time.time()
             print(f"Time taken for step {i}: {end-start}")
+            print(p_solved)
 if __name__ == "__main__":
     from HOscillator_jax import HOscillator_ND
     # ---------- initial wave-function parameters ------------------------
-    dt     = 0.01
+    dt     = 0.001
     omega  = 1.0
-    n=3
-    D=2
-    def make_SHH2_pure(omega=1.0, K_max=4):
+    n=4
+    D=5
+    def make_SHH2_pure(omega=1.0, K_max=6):
         def SHH2(t=0.0, params=None):
             osc = HOscillator_ND(params, omega=omega, K_max=K_max)  # new, clean object every time
             return osc.calculate_SHH2(t=t)
@@ -112,11 +114,12 @@ if __name__ == "__main__":
     norm=c_init.T@Smat@c_init
     c_init=c_init/jnp.sqrt(norm)
     initial_error=rothe_error(p_init,p_init,c_init,SHH2,0,dt)
-    gradient_function=grad_err = jax.grad(rothe_error, argnums=0)
-    initial_gradient=gradient_function(p_init,p_init.copy(),c_init,SHH2,0,dt)
-    print("Initial Rothe error: ", initial_error)
-    print("Initial Rothe gradient: ", initial_gradient)
     rothesolver=RotheSolver(SHH2, dt, 0, p_init, c_init)
+    #gradient_function=grad_err = jax.grad(rothe_error, argnums=0)
+    #initial_gradient=gradient_function(p_init,p_init.copy(),c_init,SHH2,0,dt)
+    #print("Initial Rothe error: ", initial_error)
+    #print("Initial Rothe gradient: ", initial_gradient)
+    """
     p_solved,c_new,final_RE,nit=rothesolver.find_next_timestep_solution(maxiter=1)
     print("Rothe error: ", final_RE)
     print("Number of iterations: ", nit)
@@ -131,4 +134,5 @@ if __name__ == "__main__":
     end=time.time()
     print("Time taken: ", end-start)
     print("Time per iteration: ", (end-start)/nit if nit > 0 else 0)
-    rothesolver.propagate(200,p_init,c_init)
+    """
+    rothesolver.propagate(1000,p_init,c_init,maxiter=30)
