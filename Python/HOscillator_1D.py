@@ -66,7 +66,10 @@ class HOscillator_1D:
 
         Z = N_i * N_j * np.sqrt(np.pi/α) * np.exp(γ + β**2/(4*α))
         return A_i, A_j, μ_i, μ_j, p_i, p_j, α, β,γ, Z
-
+    def calc_k(self,i,j,p):
+        a_i, b_i, μ_i, p_i = p[i]
+        a_j, b_j, μ_j, p_j = p[j]
+        alpha = 
     @staticmethod
     def _shift(poly, k):  return [0]*k + list(poly)
     @staticmethod
@@ -105,6 +108,29 @@ class HOscillator_1D:
                 H[i,j] = T_ij + V_ij
                 if i!=j: H[j,i] = H[i,j].conjugate()
         return H
+    def dmu(self,parr):
+        n = parr.shape[0]
+        mu_diff_mat = np.zeros((n, n), complex)
+        for i in range(n):
+            for j in range(n):
+                _, _, μ_i, μ_j, _, _, _, _, _, _ = self._common(i, j, parr)
+                mu_diff_mat[i, j] = (μ_i - μ_j)
+        return mu_diff_mat
+    def alpha_quot(self,parr):
+        n = parr.shape[0]
+        alpha_quot_mat = np.zeros((n, n), complex)
+        for i in range(n):
+            for j in range(n):
+                _, _, _, _, _, _, α, _, _, _ = self._common(i, j, parr)
+                alpha_quot_mat[i, j] = α
+        return alpha_quot_mat
+    def T(self,parr,t=None,S=None,mu_diff=None):
+        n=parr.shape[0], ω = self.ω
+        H=np.zeros((n,n),dtype=complex)
+        Smat=self.S(parr) if S is None else S
+        mu_diff_mat=self.dmu(parr) if mu_diff is None else mu_diff
+        for i in range(n):
+            for j in range(n):
 
 
 
