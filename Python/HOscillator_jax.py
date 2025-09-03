@@ -12,6 +12,52 @@ from scipy.optimize import minimize
 logpi = jnp.log(jnp.pi)
 import numpy as np
 import jax.lax as lax
+def propagate_kinetic_analytical(dt, params, lincoeff, masses, normalized=True, eps=1e-14):
+    """
+    params: shape (n, d, 4) with (a, b, mu, p) per dim; a>0, b real.
+    lincoeff: shape (n,) complex coefficients for each Gaussian.
+    masses: shape (d,) masses per dimension.
+    normalized:
+        True  -> basis Gaussians are normalized after updating (recommended).
+        False -> basis Gaussians are unnormalized exponentials; keep full prefactor.
+
+    Returns: new_params, new_lincoeff
+    """
+    params = jnp.asarray(params, dtype=jnp.float64)
+    masses = jnp.asarray(masses, dtype=jnp.float64)
+
+    a = params[:, :, 0]
+    b = params[:, :, 1]
+    x = params[:, :, 2]
+    p = params[:, :, 3]
+    alpha = a**2 + 1j*b
+    denom = 1.0 + 2j*alpha*dt/masses[None, :]
+    alpha_p = alpha / denom
+    x_p = x + dt*p/masses[None, :]  # classical drift
+    p_p = p
+    a_p = jnp.sqrt(jnp.real(alpha_p))
+    b_p = jnp.imag(alpha_p)
+
+    new_params = params.at[:, :, 0].set(a_p)
+    new_params = new_params.at[:, :, 1].set(b_p)
+    new_params = new_params.at[:, :, 2].set(x_p)
+    new_params = new_params.at[:, :, 3].set(p_p)
+
+    # phases/prefactors for coefficients
+    # kinetic plane-wave phase: exp(-i * sum_d p^2 dt / (2 m_d))
+    kin_phase = jnp.exp(1j * jnp.sum(p**2 * dt / (2.0*masses[None, :]), axis=1))
+
+    if normalized:
+        # only the *phase* from the sqrt(denom): -1/2 * arg(denom)
+        gouy_phase = jnp.exp(-0.5j * jnp.sum(jnp.angle(denom), axis=1))
+        gamma = kin_phase * gouy_phase                             # |gamma| == 1
+    else:
+        # full prefactor including magnitude (unnormalized basis)
+        sqrt_denom = jnp.prod(jnp.sqrt(denom), axis=1)
+        gamma = kin_phase / sqrt_denom
+
+    new_lincoeff = lincoeff * gamma
+    return new_params, new_lincoeff
 class ND_potentials:
     def __init__(self, params, K_max=4):
         """
@@ -19,6 +65,7 @@ class ND_potentials:
         K_max:  maximum polynomial order to precompute moments for (static under jit)
         """
         self.params = jnp.asarray(params, dtype=jnp.float64)
+        self.n = self.params.shape[0]
         self.D = self.params.shape[1]
         self.K_MAX = int(K_max)
 
@@ -173,19 +220,22 @@ class ND_potentials:
     def calculate_H2(self, t):
         return NotImplementedError
 
-    def calculate_SHH2(self, t=0, params=None):
+    def calculate_SHH2(self, t=0, params=None,splitting_type="none"):
         if params is not None:
             self.update_parameters(params)
         S = self.calculate_S()
-        H = self.calculate_H(t)
-        H2 = self.calculate_H2(t)
+        if splitting_type=="none":
+            H = self.calculate_H(t)
+            H2 = self.calculate_H2(t)
+        else: 
+            H=self.calculate_V
         return S, H, H2
-def calculate_TV_poly(self, power_string):
-    """
-    Exact relation: (VT)† = TV  ⇒  TV = VT.conj().T
-    """
-    VT = self.calculate_VT_poly(power_string)
-    return VT.conj().T
+    def calculate_TV_poly(self, power_string):
+        """
+        Exact relation: (VT)† = TV  ⇒  TV = VT.conj().T
+        """
+        VT = self.calculate_VT_poly(power_string)
+        return VT.conj().T
 
 class oneD_potentials():
     def __init__(self, params):
@@ -300,32 +350,62 @@ class HOscillator_ND(ND_potentials):
     def __init__(self, params, omega=1.0, name="HOsc_ND", K_max=4):
         super().__init__(params, K_max=K_max)
         self.omega = omega
-
-    def calculate_H(self, t=0):
+        self.V2_polynomials=None
+        self.V_polynomials=None
+        self.setupPolynomials()
+    def setupPolynomials(self):
         D = self.D
+        if self.V_polynomials is None:
+            self.V_polynomials = []
+            for i in range(D):
+                polynom = jnp.asarray([0]*i + [2] + [0]*(D-i-1))
+                self.V_polynomials.append(polynom)
+        if self.V2_polynomials is None:
+            self.V2_polynomials = []
+            for i in range(D):
+                for j in range(D):
+                    polynom = jnp.zeros(D, dtype=int)
+                    polynom = polynom.at[i].add(2).at[j].add(2)
+                    polynom = jnp.asarray(polynom)
+                    self.V2_polynomials.append(polynom)
+    def calculate_V(self,t=0):
+        D = self.D
+        V = jnp.zeros((self.n, self.n), dtype=jnp.complex128)
+        for polynom in self.V_polynomials:
+            V += 0.5 * self.calculate_polynomial_expectation_value(polynom) * self.omega**2
+        return V
+    def calculate_H(self, t=0):
         H = self.calculate_T()
-        for i in range(D):
-            polynom = jnp.asarray([0]*i + [2] + [0]*(D-i-1))
-            H += 0.5 * self.calculate_polynomial_expectation_value(polynom) * self.omega**2
+        H += self.calculate_V(t)
         return H
-
+    def calculate_V2(self,t=0):
+        D = self.D
+        V2 = jnp.zeros((self.n, self.n), dtype=jnp.complex128)
+        for polynom in self.V2_polynomials:
+                V2 += 0.25 * self.calculate_polynomial_expectation_value(polynom) * self.omega**4
+        return V2
+    def calculate_TVVT(self,t=0):
+        D = self.D
+        TVVT = jnp.zeros((self.n, self.n), dtype=jnp.complex128)
+        for polynom in self.V_polynomials:
+            TVVT += 0.5 * self.calculate_VT_poly(polynom) * self.omega**2
+        TVVT = TVVT + jnp.conj(TVVT.T)
+        return TVVT
     def calculate_H2(self, t=0):
         D = self.D
         H2 = self.calculate_Tsq()
-        for i in range(D):
-            for j in range(D):
-                polynom = jnp.zeros(D, dtype=int)
-                polynom = polynom.at[i].add(2).at[j].add(2)
-                polynom = jnp.asarray(polynom)
-                H2 += 0.25 * self.calculate_polynomial_expectation_value(polynom) * self.omega**4
-
-        TVVT = jnp.zeros_like(H2)
-        for i in range(D):
-            polynom = jnp.asarray([0]*i + [2] + [0]*(D-i-1))
-            TVVT += 0.5 * self.calculate_VT_poly(polynom) * self.omega**2
-        TVVT = TVVT + jnp.conj(TVVT.T)
-
-        return H2 + TVVT
+        H2 += self.calculate_V2(t)
+        H2 += self.calculate_TVVT(t)
+        return H2
+    def calculate_SHH2(self, t=0, params=None, splitting_type="none"):
+        S = self.calculate_S()
+        if splitting_type=="none":
+            H = self.calculate_H(t)
+            H2 = self.calculate_H2(t)
+        else:
+            H=self.calculate_V(t)
+            H2= self.calculate_V2(t)
+        return S, H, H2
 def eigh_canonical(S, H, eps=1e-12):
     S = 0.5*(S + S.conj().T)
     H = 0.5*(H + H.conj().T)
