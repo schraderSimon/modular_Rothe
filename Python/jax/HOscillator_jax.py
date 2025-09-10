@@ -62,34 +62,51 @@ def propagate_kinetic_analytical(dt, params, lincoeff, masses):
     
     new_lincoeff = lincoeff * gamma
     return new_params, new_lincoeff
-@jit
-def calculate_Gaussian_expectation_values(params,gaussian_exponential_params,S):
+#@jit
+def calculate_Gaussian_expectation_values(params,gaussian_exponential_params,linear_params):
+    print(params.shape)
     n,D,_ = params.shape # n Gaussians in D dimensions, _ is always 4
-    m,D,_ = gaussian_exponential_params.shape # m Gaussians in D dimensions, _ is always 4
+    m,_,_ = gaussian_exponential_params.shape # m Gaussians in D dimensions, _ is always 4
     gep=gaussian_exponential_params
-    expectation_values = jnp.zeros((n,n,m),dtype=dtype_complex) # The expectation values <g_i|V|g_j> for each Gaussian pair and each potential Gaussian
-    for i in range(n):
-        for j in range(n):
-            for k in range(m):
-                sum_exponents=0
-                returnval=1.0
-                for d in range(D):
-                    a_i,b_i,mu_i,p_i=params[i,d,:] 
-                    a_j,b_j,mu_j,p_j= params[j,d,:]
-                    a_k,b_k,mu_k,p_k= gep[k,d,:]
-                    alpha_i=-(a_i**2-1j*b_i)
-                    alpha_j=-(a_j**2+1j*b_j)
-                    alpha_k=-(a_k**2+1j*b_k)
-                    A=alpha_i+alpha_j+alpha_k
-                    B=2*alpha_i*mu_i - 2*alpha_j*mu_j + 2*alpha_k*mu_k - 1j*(p_i-p_j-p_k)
-                    C=alpha_i*mu_i**2 + alpha_j*mu_j**2 + alpha_k*mu_k**2  + 1j*(mu_i*p_i - mu_j*p_j - mu_k*p_k)
-                    new_center= -B/(2*A)
-                    constant=C - new_center**2*A
-                    sum_exponents+= constant
-                    returnval*= 1/jnp.sqrt(A)
-                returnval*= jnp.exp(sum_exponents)*jnp.sqrt(jnp.pi)**D
-                expectation_values=expectation_values.at[i,j,k].set(returnval+expectation_values[i,j,k]) #Update the expectation value
-    return jnp.einsum('ij,ijk->ijk',S,expectation_values)
+    expectation_values = jnp.zeros((n,n),dtype=dtype_complex) # The expectation values <g_i|V|g_j>
+    a, b, mu, p = params.transpose(2, 0, 1)
+    alpha = a**2 + 1j*b                     # (n,D)
+    ai, aj = alpha.conj()[:, None, :], alpha[None, :, :]
+    gauss_A = ai + aj                      # (n,n,D)
+    ai_mui = ai * (mu[:, None, :])
+    ai_mui2= ai * (mu[:, None, :]**2)
+    aj_muj = aj * (mu[None, :, :])
+    aj_muj2= aj * (mu[None, :, :]**2)
+    muipi=mu[:,None,:]*p[:,None,:]
+    mujpj=mu[None,:, :]*p[None,:, :]
+    muipimujpj=1j*(-mujpj+muipi)
+    pi, pj = p[:, None, :], p[None, :, :]
+    pipj=pj-pi
+    aimui_ajmuj_sum= ai_mui + aj_muj
+    aimuisq_ajmujsq= ai_mui2 + aj_muj2
+    gauss_B=2*aimui_ajmuj_sum+1j*pipj
+    gauss_C= -aimuisq_ajmujsq + muipimujpj
+    #Calculate the normalization factor for each Gaussian pair
+    center_diag   = gauss_B.diagonal(axis1=0, axis2=1) / (2 * gauss_A.diagonal(axis1=0, axis2=1))
+    constant_diag = gauss_C.diagonal(axis1=0, axis2=1) + center_diag**2 * gauss_A.diagonal(axis1=0, axis2=1)
+    exponent_subtraction = constant_diag - 0.5 * jnp.log(gauss_A.diagonal(axis1=0, axis2=1))
+    center_diag=center_diag.T
+    constant_diag=constant_diag.T
+    exponent_subtraction=exponent_subtraction.T
+    full_exponent_subtraction= exponent_subtraction[:,None,:]+exponent_subtraction[None,:,:] # Shape (n,n,D)
+    for k in range(m):
+        a_k, b_k, mu_k, p_k = gep[k,:,:].T
+        alpha_k=(a_k**2+1j*b_k) # Along D
+        allA=gauss_A+alpha_k # Should have shape (n,n,D)
+        allB=gauss_B+2*(alpha_k*mu_k) + 1j*p_k
+        allC=gauss_C- alpha_k*mu_k**2 - 1j*mu_k*p_k
+        new_centers=allB/(2*allA)
+        constants=allC + new_centers**2*allA
+        sum_exponents_all= constants-0.5*jnp.log(allA)-0.5*full_exponent_subtraction
+        sum_exponents_ij=jnp.sum(sum_exponents_all,axis=2) # Shape (n,n)
+        returnval_ij= jnp.exp(sum_exponents_ij) # Shape (n,n)
+        expectation_values=expectation_values+(returnval_ij*linear_params[k]) #Set the expectation value
+    return expectation_values #Sum over all potential Gaussians
 class ND_potentials:
     def __init__(self, params, K_max=4):
         """
@@ -150,7 +167,8 @@ class ND_potentials:
     def calculate_S(self):
         D = self.D
         expo_core = jnp.sum(self.exponent_contrib - self.tysq * self.tilde_k, axis=-1)  # (n,n)
-        expo_pref = 0.5 * (D * jnp.log(jnp.pi) - jnp.sum(jnp.log(self.Gamma), axis=-1)) # (n,n)
+        #expo_pref = 0.5 * (D * jnp.log(jnp.pi) - jnp.sum(jnp.log(self.Gamma), axis=-1)) # (n,n) #PI ISN'T NEEDED
+        expo_pref = -0.5* jnp.sum(jnp.log(self.Gamma), axis=-1) # (n,n)
         expo = expo_core + expo_pref  # (n,n)
 
         diag_expo = jnp.real(jnp.diagonal(expo))
@@ -355,7 +373,6 @@ class generalPotentialSolver(ND_potentials):
 
     
     def calculate_H2(self, t=0):
-        D = self.D
         H2 = self.calculate_Tsq()
         H2 += self.calculate_V2(t)
         H2 += self.calculate_TVVT(t)
@@ -372,8 +389,8 @@ class generalPotentialSolver(ND_potentials):
 
 if __name__=="__main__":
     from jax_Rothe import *
-    n=3
-    D=1
+    n=2
+    D=4
     p_init = jnp.zeros((n, D, 4),dtype=dtype_real)
     p_init = p_init.at[:, :, 0].set(1/jnp.sqrt(2)) #Width parameters
     p_init = p_init.at[:, :, 0].set(1/jnp.sqrt(2)) #Width parameters
@@ -393,7 +410,10 @@ if __name__=="__main__":
         p_init = p_init.at[i, :, 2].set(2+np.random.uniform(-0.5, 0.5, (D,)))          #Move to the right
     osc = generalPotentialSolver(p_init,example_string)
     S=osc.calculate_S()
-    gaussian=jnp.array([jnp.array([1e-6,0.0,0.0,0.0],dtype=dtype_real)]).reshape(1,1,4)
-    gev=calculate_Gaussian_expectation_values(p_init,gaussian,S)
+    gaussian=jnp.zeros((2,D,4),dtype=dtype_real)
+    gaussian=gaussian.at[0,:,0].set(1e-11) #a
+    gaussian=gaussian.at[1,:,0].set(1e-11) #b
+    linear_params=jnp.ones(gaussian.shape[0],dtype=dtype_complex)
+    gev=calculate_Gaussian_expectation_values(p_init,gaussian,linear_params)
     print("S=",S)
-    print(gev[:,:,0])
+    print(gev)
