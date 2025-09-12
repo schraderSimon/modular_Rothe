@@ -16,11 +16,13 @@ import sys
 import numpy as np
 from scipy.optimize import minimize
 logpi = jnp.log(jnp.pi)
+log10 = jnp.log(10)
 import numpy as np
 import jax.lax as lax
 from functools import partial
 dtype_real=jnp.float64
 dtype_complex=jnp.complex128
+    
 @jit
 def propagate_kinetic_analytical(dt, params, lincoeff, masses):
     """
@@ -62,6 +64,72 @@ def propagate_kinetic_analytical(dt, params, lincoeff, masses):
     
     new_lincoeff = lincoeff * gamma
     return new_params, new_lincoeff
+def calculate_squared_Gaussian_potential(gaussian_exponential_params, linear_params, tiny=1e-16):
+    # gaussian_exponential_params shape: (m, D, 4) with order [a, b, mu, p] along the last axis
+    m, D, _ = gaussian_exponential_params.shape
+
+    new_Gaussian_exponential_params = jnp.zeros((m*(m+1)//2, D, 4), dtype=dtype_real)
+    new_linear_params = jnp.zeros((m*(m+1)//2,), dtype=dtype_complex)
+    log_tiny=jnp.log(tiny)
+    count = 0
+    for i in range(m):
+        # params for i (each is shape (D,))
+        a1 = gaussian_exponential_params[i, :, 0]
+        b1 = gaussian_exponential_params[i, :, 1]
+        mu1 = gaussian_exponential_params[i, :, 2]
+        p1 = gaussian_exponential_params[i, :, 3]
+        c1 = linear_params[i]
+
+        a1sq = a1**2
+        for j in range(i, m):
+            # params for j
+            a2 = gaussian_exponential_params[j, :, 0]
+            b2 = gaussian_exponential_params[j, :, 1]
+            mu2 = gaussian_exponential_params[j, :, 2]
+            p2 = gaussian_exponential_params[j, :, 3]
+            c2 = linear_params[j]
+
+            a2sq = a2**2
+            A1 = a1sq + 1j*b1
+            A2 = a2sq + 1j*b2
+
+            den = a1sq + a2sq                      # = a_12^2, shape (D,)
+            new_a = jnp.sqrt(den)                  # real, >=0, per-dimension
+            new_b = b1 + b2
+
+            # handle degenerate case den==0 (i.e., a1=a2=0 in that dimension)
+            den_pos = den > 0
+            mu_gen = (a1sq * mu1 + a2sq * mu2) / jnp.where(den_pos, den, 1.0)
+            new_mu = jnp.where(den_pos, mu_gen, 0.5*(mu1 + mu2))
+
+            # works for both general and degenerate cases
+            new_p = (p1 + p2) + 2*(b1*(mu1 - new_mu) + b2*(mu2 - new_mu))
+
+            # amplitude: c12 = (c1*c2) * exp(sum_d [ ... ])
+            per_dim_log = (
+                -(A1*mu1**2 + A2*mu2**2)
+                + (den + 1j*new_b)*new_mu**2
+                - 1j*(p1*mu1 + p2*mu2)
+                + 1j*new_p*new_mu
+            )  # shape (D,)
+            log_phase = jnp.sum(per_dim_log)  # scalar complex
+
+            cand_log = jnp.log(c1 * c2) +(log_phase)  # complex scalar
+            cand_log_real = jnp.real(cand_log)
+            # prune tiny magnitudes safely
+            new_c = jnp.where(cand_log_real < log_tiny, jnp.array(0.0+0.0j, dtype=dtype_complex), jnp.exp(cand_log))
+
+            # write params (stack per-dimension)
+            new_params = jnp.stack([new_a, new_b, new_mu, new_p], axis=-1).astype(dtype_real)
+            new_Gaussian_exponential_params = new_Gaussian_exponential_params.at[count].set(new_params)
+
+            # double off-diagonals (i<j), keep diagonals once
+            new_linear_params = new_linear_params.at[count].set(new_c if i == j else 2*new_c)
+
+            count += 1
+
+    return new_Gaussian_exponential_params, new_linear_params
+    
 #@jit
 def calculate_Gaussian_expectation_values(params,gaussian_exponential_params,linear_params):
     print(params.shape)
@@ -94,18 +162,25 @@ def calculate_Gaussian_expectation_values(params,gaussian_exponential_params,lin
     constant_diag=constant_diag.T
     exponent_subtraction=exponent_subtraction.T
     full_exponent_subtraction= exponent_subtraction[:,None,:]+exponent_subtraction[None,:,:] # Shape (n,n,D)
-    for k in range(m):
-        a_k, b_k, mu_k, p_k = gep[k,:,:].T
-        alpha_k=(a_k**2+1j*b_k) # Along D
-        allA=gauss_A+alpha_k # Should have shape (n,n,D)
-        allB=gauss_B+2*(alpha_k*mu_k) + 1j*p_k
-        allC=gauss_C- alpha_k*mu_k**2 - 1j*mu_k*p_k
-        new_centers=allB/(2*allA)
-        constants=allC + new_centers**2*allA
-        sum_exponents_all= constants-0.5*jnp.log(allA)-0.5*full_exponent_subtraction
-        sum_exponents_ij=jnp.sum(sum_exponents_all,axis=2) # Shape (n,n)
-        returnval_ij= jnp.exp(sum_exponents_ij) # Shape (n,n)
-        expectation_values=expectation_values+(returnval_ij*linear_params[k]) #Set the expectation value
+    aK, bK, muK, pK = gep.transpose(2, 0, 1)      # (m, D)
+    alphaK = aK**2 + 1j*bK                         # (m, D)
+
+    # replace the entire `for k in range(m): ...` with:
+    def _body(k, acc):
+        ak  = alphaK[k]        # (D,)
+        muk = muK[k]           # (D,)
+        pk  = pK[k]            # (D,)
+        allA = gauss_A + ak
+        allB = gauss_B + 2*(ak*muk) + 1j*pk
+        allC = gauss_C - ak*muk**2 - 1j*muk*pk
+        new_centers = allB / (2*allA)
+        constants   = allC + new_centers**2 * allA
+        sum_exponents_all = constants - 0.5*jnp.log(allA) - 0.5*full_exponent_subtraction
+        sum_exponents_ij  = jnp.sum(sum_exponents_all, axis=2)   # (n, n)
+        contrib = jnp.exp(sum_exponents_ij) * linear_params[k]   # (n, n)
+        return acc + contrib
+
+    expectation_values = jax.lax.fori_loop(0, m, _body, expectation_values)
     return expectation_values #Sum over all potential Gaussians
 class ND_potentials:
     def __init__(self, params, K_max=4):
