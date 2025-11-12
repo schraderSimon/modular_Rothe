@@ -39,3 +39,7 @@
 
 # debug information files
 *.dwo
+
+#Data
+*.h5
+*.pyc
