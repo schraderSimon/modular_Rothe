@@ -26,6 +26,7 @@ def save_rothe_state(
       - group "data": datasets "p", "c", "t", "rothe_error" (first dim = step index)
     """
     filename = os.path.join(path, f"{sim_name}__{splitting_type}.h5")
+    os.makedirs(path, exist_ok=True)
     params_np = np.asarray(params)
     coeffs_np = np.asarray(coeffs)
 

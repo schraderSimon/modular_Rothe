@@ -280,8 +280,8 @@ class RotheSolver:
     You provide:
         - `SHH2(t, params, splitting_type) -> (S, H, H2)` where
             S, H, H2 are (N,N) matrices in the Gaussian basis.
-        - `rothe_grad_jax`: a JAX function returning (value, grad) w.r.t. params_new.
-        - `rothe_nograd`: a non-grad version (used to compute coeffs_new).
+        - `rothe_grad_jax`: a JAX function returning (value, grad) w.r.t. p_new.
+        - `rothe_nograd`: a non-grad version (used to compute c_new).
 
     State:
         - `params_old`: Gaussian parameters (typically shape (n, D, 4) with (a,b,mu,p)).
@@ -303,7 +303,7 @@ class RotheSolver:
         splitting_type="none",
         name=None,
         polynomial_string=None,
-        out_dir=".",
+        out_dir="./wave_function_data",
         compression="gzip",
         compression_opts=4,
     ):
@@ -580,7 +580,7 @@ class RotheSolver:
 
             print(f"Time taken: {time_taken:.2f}")
             # print(p_solved)
-            # print(coeffs_new)
+            # print(c_new)
         print(f"Total time: {self.total_time}")
 
     def resume_from_file(self, t_start=None):
@@ -622,7 +622,7 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         (rothe_error, rothe_vg_jit)
 
                 - `rothe_error(params_new, params_old, coeffs_old, SHH2, t, dt, return_cnew=False)`
-          returns a real scalar (squared Rothe error) and optionally `coeffs_new`.
+          returns a real scalar (squared Rothe error) and optionally `c_new`.
 
         - `rothe_vg_jit` is `jax.value_and_grad(rothe_error, argnums=0)` jitted.
 
@@ -651,8 +651,8 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
             S_tilde_full + jnp.eye(S_tilde_full.shape[0]) * lambda_
         )  # Regularization term to avoid singular matrices.
         # L = jnp.linalg.cholesky(S_reg[ngo:, ngo:])  # Hermitian PD
-        # coeffs_new = jsp.linalg.solve_triangular(L, rho_vec, lower=True, trans="N")
-        # coeffs_new = jsp.linalg.solve_triangular(L.conj().T, coeffs_new, lower=False, trans="N")
+        # c_new = jsp.linalg.solve_triangular(L, rho_vec, lower=True, trans="N")
+        # c_new = jsp.linalg.solve_triangular(L.conj().T, c_new, lower=False, trans="N")
         coeffs_new = solve(S_reg[ngo:, ngo:], rho_vec, assume_a="her")
         overlap_term = jnp.conj(coeffs_old) @ S_tilde_full[:ngo, :ngo] @ coeffs_old
         projection_term = jnp.real(jnp.conj(rho_vec).T @ coeffs_new)

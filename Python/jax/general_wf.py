@@ -1,3 +1,17 @@
+# TODOs, separated into small bits:
+# DONE # Parse exponential terms into (m, D, 4) arrays
+# Calculate Gaussian squared terms
+# Include exponential terms into the Hamiltonian implementation
+# Include exponential squared terms into the Hamiltonian squared implementation
+# Also include cross-terms
+# Include time-dependent potentials (I guess this is not too hard)
+# Here, it will be easiest to just add a third type of thing in read_strings that includes time explicitly
+# Include freezing the ground state option
+# Find my old code for writing hydrogen as a sum of Gaussians.
+# Try imaginary time propagation to find ground state instead of energy/variance optimization? In some sense,
+# this is precisely what Rothe is good for.
+# Include "uniform width" option and make code faster for that case
+#
 import os
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_level=4"
@@ -16,7 +30,6 @@ log10 = jnp.log(10)
 import numpy as np
 
 import jax.lax as lax
-from calculate_Hessian_coefficients import calculate_Hessian_matrix
 
 dtype_real = jnp.float64
 dtype_complex = jnp.complex128
@@ -137,6 +150,24 @@ def calculate_squared_Gaussian_potential(
             count += 1
 
     return new_Gaussian_exponential_params, new_linear_params
+
+
+def parse_exponential_params(exponential):
+    try:
+        linear_coefficients, widths, positions = zip(*exponential)
+    except ValueError as e:
+        return None, None
+    m = len(linear_coefficients)
+    D = len(positions[0])
+    exponential_params = jnp.zeros((m, D, 4), dtype=dtype_real)
+    for k in range(m):
+        width = widths[k]
+        pos = positions[k]
+        a_k = jnp.sqrt(width)
+        mu_k = jnp.asarray(pos, dtype=dtype_real)
+        exponential_params = exponential_params.at[k, :, 0].set(a_k)
+        exponential_params = exponential_params.at[k, :, 2].set(mu_k)
+    return jnp.asarray(linear_coefficients, dtype=dtype_complex), exponential_params
 
 
 def get_gaussian_pair_terms(params):
@@ -440,7 +471,19 @@ class generalPotentialSolver(ND_potentials):
     """
 
     def __init__(self, params, polynomial_string):
-        self.polynomial = read_string(polynomial_string)
+        self.polynomial, self.exponential = read_string(polynomial_string)
+        lin_exp, exponent_exp = parse_exponential_params(self.exponential)
+        self.linear_exponential_params = lin_exp
+        self.exponential_params = exponent_exp
+        if self.exponential_params is not None:
+            self.exponential_squared_params, self.linear_exponential_squared = (
+                calculate_squared_Gaussian_potential(
+                    self.exponential_params, self.linear_exponential_params
+                )
+            )
+        else:
+            self.exponential_squared_params = None
+            self.linear_exponential_squared = None
         self.polynomial_squared = obtain_polynomial_squared(self.polynomial)
         self._poly_keys = jnp.asarray(list(self.polynomial.keys()), dtype=jnp.int32)
         self._poly_vals = jnp.asarray(list(self.polynomial.values()), dtype=dtype_complex)
@@ -541,57 +584,3 @@ class generalPotentialSolver(ND_potentials):
             H = self.calculate_V(t)
             H2 = self.calculate_V2(t)
         return S, H, H2
-
-
-if __name__ == "__main__":
-    from jax_Rothe import *
-
-    n = 2
-    D = 4
-    params_init = jnp.zeros((n, D, 4), dtype=dtype_real)
-    params_init = params_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
-    params_init = params_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
-    params_init = params_init.at[0, :, 2].set(2.0)  # Set mu to (2,...,2)
-    example_string = """
-    dimension 2
-    polynomial
-    x0x0: 0.5
-    x1x1: 0.5
-    x0x0x1: 0.111803
-    x1x1x1: -0.03726766666
-    x0x0x0x0: 0.0007812444255625
-    x1x1x1x1: 0.0007812444255625
-    x0x0x1x1: 0.001562488851125
-    """
-    for i in range(1, n):
-        params_init = params_init.at[i, :, 2].set(
-            2 + np.random.uniform(-0.5, 0.5, (D,))
-        )  # Move to the right
-    osc = generalPotentialSolver(params_init, example_string)
-    S = osc.calculate_S()
-    gaussian = jnp.zeros((2, D, 4), dtype=dtype_real)
-    gaussian = gaussian.at[0, :, 0].set(1e-11)  # a
-    gaussian = gaussian.at[1, :, 0].set(1e-11)  # b
-    linear_params = jnp.ones(gaussian.shape[0], dtype=dtype_complex)
-    gev = calculate_Gaussian_expectation_values(params_init, gaussian, linear_params)
-    print("S=", S)
-    print(gev)
-
-    # Next test: I forgot if <x>= <x>*S_yy*S_zz etc. or not
-    n = 3
-    D = 2
-    params_init = jnp.zeros((n, D, 4), dtype=dtype_real)
-    params_init = params_init.at[0, 0, :].set([1 / jnp.sqrt(2), 0, 1, 0])
-    params_init = params_init.at[0, 1, :].set([1 / jnp.sqrt(2), 0, 0, 0])
-    params_init = params_init.at[1, 0, :].set([1 / jnp.sqrt(2), 0, 1, 0])  # x expectation is 1
-    params_init = params_init.at[1, 1, :].set([1 / jnp.sqrt(2), 0, -10, 0])
-    params_init = params_init.at[2, 0, :].set([1 / jnp.sqrt(2), 0, 0, 0])  # x expectation is 1
-    params_init = params_init.at[2, 1, :].set([1 / jnp.sqrt(2), 0, 0, 0])
-    print(params_init)
-    # The "total" <x> is super small because of normalization. So either it's one, or machine zero
-    osc = generalPotentialSolver(params_init, example_string)
-    S = osc.calculate_S()
-    expectations = osc.moments
-    print(
-        expectations[:, :, 1, 1]
-    )  # So it is "unnormalized" in the sense that is is proper 1D! I am a genius.

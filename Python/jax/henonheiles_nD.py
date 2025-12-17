@@ -64,7 +64,17 @@ example_string_1D = """
     x0x0: 0.5
     x0x0x0x0: 0.0007812444255625
     """
-dim = 4
+
+exponential_example = """
+    dimension 2 # Comments are possible
+    polynomial
+    x0x0: 0.5 #This does not affect anything
+    x1x1: 0.5
+    exponential
+    0.1, 0.5, [ -1.0, 2.0 ] # Linear coeff, width, position
+    0.2, 1.0, [ 3.0, -2.0 ]
+"""
+dim = 2
 if dim == 6:
     example_string = example_string_6D
 elif dim == 4:
@@ -73,10 +83,11 @@ elif dim == 1:
     example_string = example_string_1D
 else:
     example_string = example_string_2D
-polynomial = read_string(example_string)
+example_string = exponential_example
+polynomial, exponential = read_string(example_string)
 rothe_error, rothe_vg_jit = setUpRotheErrorAndGradient_jit(splitting_type=splitting_type)
 dt = 0.01
-n = 10
+n = 1
 key, value = next(iter(polynomial.items()))
 D = len(key)
 
@@ -121,6 +132,7 @@ rothesolver = RotheSolver(
     splitting_type=splitting_type,
     name="HenonHeiles_%dD_%d" % (D, n),
     polynomial_string=example_string,
+    out_dir="./wave_function_data",
 )
 nsteps = int(100 / dt)
 try:
