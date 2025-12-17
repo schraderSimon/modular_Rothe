@@ -1,0 +1,31 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%post
+    # System packages
+    apt-get update && apt-get install -y \
+        python3 \
+        python3-venv \
+        python3-dev \
+        git \
+        build-essential \
+        libhdf5-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Create a virtualenv inside the container
+    python3 -m venv /opt/jaxenv
+
+    # Use the venv's pip from here on
+    /opt/jaxenv/bin/pip install --upgrade pip
+
+    # JAX with CUDA 12 (this should now give you 0.7.x + CUDA for Python 3.12)
+    /opt/jaxenv/bin/pip install --no-cache-dir \
+        "jax[cuda12]" \
+        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
+    # Extra stack
+    /opt/jaxenv/bin/pip install --no-cache-dir \
+        scipy \
+        matplotlib \
+        tqdm \
+        h5py

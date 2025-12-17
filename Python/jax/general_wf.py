@@ -1,17 +1,11 @@
 import os
 
-from ray import get
-
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_level=4"
-from functools import partial
 
 import jax
 
 jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_default_matmul_precision", "high")  # helps on GPU/TPU
-import numpy as np
-from scipy.optimize import minimize
-
+jax.config.update("jax_default_matmul_precision", "high")
 import jax.numpy as jnp
 from jax import jit
 from read_string import obtain_polynomial_squared, read_string
@@ -22,6 +16,7 @@ log10 = jnp.log(10)
 import numpy as np
 
 import jax.lax as lax
+from calculate_Hessian_coefficients import calculate_Hessian_matrix
 
 dtype_real = jnp.float64
 dtype_complex = jnp.complex128
@@ -33,15 +28,19 @@ def get_individual_params(params):
 
 
 @jit
-def propagate_kinetic_analytical(dt, params, lincoeff, masses):
+def propagate_kinetic_analytical(dt, params, coeffs, masses):
     """
-    params: shape (n, d, 4) with (a, b, mu, p) per dim; a>0, b real.
-    lincoeff: shape (n,) complex coefficients for each Gaussian.
-    masses: shape (d,) masses per dimension.
-    normalized:
-        True  -> basis Gaussians are normalized after updating (recommended).
+    Exact free-particle (kinetic) propagation for a Gaussian basis.
 
-    Returns: new_params, new_lincoeff
+    Args:
+        dt: Time step.
+        params: Array of shape (n, D, 4) holding per-Gaussian, per-dimension
+            parameters in the order (a, b, mu, p), with $a>0$.
+        coeffs: Array of shape (n,) with complex linear coefficients $c_i$.
+        masses: Array of shape (D,) with the mass in each dimension.
+
+    Returns:
+        (new_params, new_coeffs) after applying $e^{-i T dt}$.
     """
     params = jnp.asarray(params, dtype=dtype_real)
     masses = jnp.asarray(masses, dtype=dtype_real)
@@ -64,12 +63,11 @@ def propagate_kinetic_analytical(dt, params, lincoeff, masses):
     # kinetic plane-wave phase: exp(-i * sum_d p^2 dt / (2 m_d))
     kin_phase = jnp.exp(1j * jnp.sum(p_nD**2 * dt / (2.0 * masses[None, :]), axis=1))
 
-    # We ignore the "normalized"=True - it is always true here. (this is for jax.jit compatibility)
     gouy_phase = jnp.exp(-0.5j * jnp.sum(jnp.angle(denom_nD), axis=1))
     gamma = kin_phase * gouy_phase  # |gamma| == 1
 
-    new_lincoeff = lincoeff * gamma
-    return new_params, new_lincoeff
+    new_coeffs = coeffs * gamma
+    return new_params, new_coeffs
 
 
 def calculate_squared_Gaussian_potential(
@@ -143,7 +141,6 @@ def calculate_squared_Gaussian_potential(
 
 def get_gaussian_pair_terms(params):
     a, b, mu, p = get_individual_params(params)
-    print(a.shape)
     alpha = a**2 + 1j * b  # (n,D)
     ai, aj = alpha.conj()[:, None, :], alpha[None, :, :]
     gauss_A = ai + aj  # (n,n,D)
@@ -178,7 +175,6 @@ def get_exponent_subtraction_terms(gauss_A, gauss_B, gauss_C):
 
 # @jit
 def calculate_Gaussian_expectation_values(params, gaussian_exponential_params, linear_params):
-    print(params.shape)
     n, D, _ = params.shape  # n Gaussians in D dimensions, _ is always 4
     m, _, _ = gaussian_exponential_params.shape  # m Gaussians in D dimensions, _ is always 4
     gauss_A, gauss_B, gauss_C = get_gaussian_pair_terms(params)
@@ -209,6 +205,21 @@ def calculate_Gaussian_expectation_values(params, gaussian_exponential_params, l
 
 
 class ND_potentials:
+    """Gaussian-basis building blocks in D dimensions.
+
+    This class precomputes overlap-like quantities and (Hermite) moments for a set
+    of (generally non-orthogonal) Gaussian basis functions. Subclasses implement
+    a potential model by providing `calculate_H`, `calculate_H2` or `calculate_V`,
+    `calculate_V2`.
+
+    Parameter convention (per Gaussian, per dimension):
+        - a: width-like parameter (stored as real, used as $a^2$)
+        - b: quadratic phase (real)
+        - mu: center (real)
+        - p: momentum (real)
+    Stored in an array of shape (n, D, 4) as (a, b, mu, p).
+    """
+
     def __init__(self, params, K_max=4):
         """
         params: (n, D, 4) -> (a, b, mu, p) per dimension
@@ -267,13 +278,12 @@ class ND_potentials:
         self.moments = self.calculate_all_moments(maximal_order=self.K_MAX)
 
     def calculate_S(self):
-        D = self.D
         expo_core = jnp.sum(self.exponent_contrib - self.tysq * self.tilde_k, axis=-1)  # (n,n)
         # expo_pref = 0.5 * (D * jnp.log(jnp.pi) - jnp.sum(jnp.log(self.Gamma), axis=-1)) # (n,n) #PI ISN'T NEEDED
         expo_pref = -0.5 * jnp.sum(jnp.log(self.Gamma), axis=-1)  # (n,n)
         expo = expo_core + expo_pref  # (n,n)
 
-        diag_expo = jnp.real(jnp.diagonal(expo))
+        diag_expo = -0.5 * jnp.sum(jnp.log(2.0 * self.a**2), axis=-1)
         expo_norm = expo - 0.5 * (diag_expo[:, None] + diag_expo[None, :])
         S = jnp.exp(expo_norm)
         # S = jnp.where(jnp.real(expo_norm) < -100, 0.0, jnp.exp(expo_norm))
@@ -303,7 +313,6 @@ class ND_potentials:
         if maximal_order is None:
             maximal_order = self.K_MAX
         K = int(maximal_order)
-
         P, R = self.P, self.R  # (n,n,D) complex
         M0 = jnp.ones_like(P)
         M1 = P
@@ -368,10 +377,6 @@ class ND_potentials:
         VT = S * (Mprod * jnp.sum(vt_coeff, axis=-1))
         return VT
 
-    def calculate_TV_poly(self, power_string):
-        VT = self.calculate_VT_poly(power_string)
-        return VT.conj().T
-
     def calculate_H(self, t):
         raise NotImplementedError
 
@@ -384,7 +389,12 @@ class ND_potentials:
         return self._calc_SHH2(t=t, splitting_type=splitting_type)
 
     # @partial(jax.jit, static_argnames=('splitting_type',), donate_argnums=(0,))
-    def _calc_SHH2(self, t=0, splitting_type="none"):
+    def _calc_SHH2(
+        self, t=0, splitting_type="none"
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        H: jnp.ndarray
+        H2: jnp.ndarray
+        S: jnp.ndarray
         S = self.S if self.S is not None else self.calculate_S()
         if splitting_type == "none":
             H = self.calculate_H(t)
@@ -401,8 +411,34 @@ class ND_potentials:
         VT = self.calculate_VT_poly(power_string)
         return VT.conj().T
 
+    def calculate_V(self, t):
+        raise NotImplementedError
+
+    def calculate_V2(self, t):
+        raise NotImplementedError
+
+    def set_up_hessian(self):
+        moments = self.moments
+        overlap = self.S if self.S is not None else self.calculate_S()
+
 
 class generalPotentialSolver(ND_potentials):
+    """
+    Polynomial potential defined by a small DSL string.
+
+    The `polynomial_string` is parsed by `read_string.read_string` and is expected
+    to define the dimensionality and a dict of monomials with coefficients.
+    Example (2D):
+
+        dimension 2
+        polynomial
+        x0x0: 0.5
+        x1x1: 0.5
+        x0x0x1: 0.111803
+
+    Internally, this class also precomputes the squared polynomial (needed for H^2).
+    """
+
     def __init__(self, params, polynomial_string):
         self.polynomial = read_string(polynomial_string)
         self.polynomial_squared = obtain_polynomial_squared(self.polynomial)
@@ -512,10 +548,10 @@ if __name__ == "__main__":
 
     n = 2
     D = 4
-    p_init = jnp.zeros((n, D, 4), dtype=dtype_real)
-    p_init = p_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
-    p_init = p_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
-    p_init = p_init.at[0, :, 2].set(2.0)  # Set mu to (2,...,2)
+    params_init = jnp.zeros((n, D, 4), dtype=dtype_real)
+    params_init = params_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
+    params_init = params_init.at[:, :, 0].set(1 / jnp.sqrt(2))  # Width parameters
+    params_init = params_init.at[0, :, 2].set(2.0)  # Set mu to (2,...,2)
     example_string = """
     dimension 2
     polynomial
@@ -528,15 +564,34 @@ if __name__ == "__main__":
     x0x0x1x1: 0.001562488851125
     """
     for i in range(1, n):
-        p_init = p_init.at[i, :, 2].set(
+        params_init = params_init.at[i, :, 2].set(
             2 + np.random.uniform(-0.5, 0.5, (D,))
         )  # Move to the right
-    osc = generalPotentialSolver(p_init, example_string)
+    osc = generalPotentialSolver(params_init, example_string)
     S = osc.calculate_S()
     gaussian = jnp.zeros((2, D, 4), dtype=dtype_real)
     gaussian = gaussian.at[0, :, 0].set(1e-11)  # a
     gaussian = gaussian.at[1, :, 0].set(1e-11)  # b
     linear_params = jnp.ones(gaussian.shape[0], dtype=dtype_complex)
-    gev = calculate_Gaussian_expectation_values(p_init, gaussian, linear_params)
+    gev = calculate_Gaussian_expectation_values(params_init, gaussian, linear_params)
     print("S=", S)
     print(gev)
+
+    # Next test: I forgot if <x>= <x>*S_yy*S_zz etc. or not
+    n = 3
+    D = 2
+    params_init = jnp.zeros((n, D, 4), dtype=dtype_real)
+    params_init = params_init.at[0, 0, :].set([1 / jnp.sqrt(2), 0, 1, 0])
+    params_init = params_init.at[0, 1, :].set([1 / jnp.sqrt(2), 0, 0, 0])
+    params_init = params_init.at[1, 0, :].set([1 / jnp.sqrt(2), 0, 1, 0])  # x expectation is 1
+    params_init = params_init.at[1, 1, :].set([1 / jnp.sqrt(2), 0, -10, 0])
+    params_init = params_init.at[2, 0, :].set([1 / jnp.sqrt(2), 0, 0, 0])  # x expectation is 1
+    params_init = params_init.at[2, 1, :].set([1 / jnp.sqrt(2), 0, 0, 0])
+    print(params_init)
+    # The "total" <x> is super small because of normalization. So either it's one, or machine zero
+    osc = generalPotentialSolver(params_init, example_string)
+    S = osc.calculate_S()
+    expectations = osc.moments
+    print(
+        expectations[:, :, 1, 1]
+    )  # So it is "unnormalized" in the sense that is is proper 1D! I am a genius.

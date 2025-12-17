@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +10,6 @@ import numpy as np
 from scipy.optimize import minimize
 
 logpi = jnp.log(jnp.pi)
-import numpy as np
 
 from utils import _symh, divide_outer
 
@@ -187,7 +185,6 @@ def find_groundstate(params0, omega=1.0, eps=1e-12):
 
 
 def canonical_orthogonalization(S, H, eps=1e-12):
-    pass
     w, U = jnp.linalg.eigh(S)
     w = jnp.clip(jnp.real(w), a_min=eps, a_max=None)
     X = U * (1.0 / jnp.sqrt(w))[None, :]

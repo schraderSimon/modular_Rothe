@@ -12,11 +12,11 @@ def save_rothe_state(
     dt,
     t,
     rothe_error,
-    p,
-    c,
+    params,
+    coeffs,
     compression="gzip",
     compression_opts=4,
-    path=".",
+    path="./wave_function_data",
 ):
     """
     Append one step of the simulation to a single HDF5 file.
@@ -26,8 +26,8 @@ def save_rothe_state(
       - group "data": datasets "p", "c", "t", "rothe_error" (first dim = step index)
     """
     filename = os.path.join(path, f"{sim_name}__{splitting_type}.h5")
-    p_np = np.asarray(p)
-    c_np = np.asarray(c)
+    params_np = np.asarray(params)
+    coeffs_np = np.asarray(coeffs)
 
     with h5py.File(filename, "a") as f:
         g = f.require_group("data")
@@ -37,8 +37,9 @@ def save_rothe_state(
         f.attrs.setdefault("splitting_type", str(splitting_type))
         f.attrs.setdefault("dt", float(dt))
         f.attrs.setdefault("created", time.time())
-        f.attrs["p_dtype"] = str(p_np.dtype)
-        f.attrs["c_dtype"] = str(c_np.dtype)
+        # Keep attribute names stable for older files.
+        f.attrs["p_dtype"] = str(params_np.dtype)
+        f.attrs["c_dtype"] = str(coeffs_np.dtype)
 
         # store full polynomial string as scalar vlen UTF-8
         dt_str = h5py.string_dtype(encoding="utf-8")
@@ -47,8 +48,8 @@ def save_rothe_state(
             dset[()] = polynomial_string
 
         # --- ensure datasets exist (robust to half-written files) ---
-        p_shape = tuple(p_np.shape)
-        c_shape = tuple(c_np.shape)
+        params_shape = tuple(params_np.shape)
+        coeffs_shape = tuple(coeffs_np.shape)
 
         def _kwargs():
             return dict(
@@ -60,19 +61,19 @@ def save_rothe_state(
         if "p" not in g:
             g.create_dataset(
                 "p",
-                shape=(0,) + p_shape,
-                maxshape=(None,) + p_shape,
-                chunks=(1,) + p_shape,
-                dtype=p_np.dtype,
+                shape=(0,) + params_shape,
+                maxshape=(None,) + params_shape,
+                chunks=(1,) + params_shape,
+                dtype=params_np.dtype,
                 **_kwargs(),
             )
         if "c" not in g:
             g.create_dataset(
                 "c",
-                shape=(0,) + c_shape,
-                maxshape=(None,) + c_shape,
-                chunks=(1,) + c_shape,
-                dtype=c_np.dtype,
+                shape=(0,) + coeffs_shape,
+                maxshape=(None,) + coeffs_shape,
+                chunks=(1,) + coeffs_shape,
+                dtype=coeffs_np.dtype,
                 **_kwargs(),
             )
         if "t" not in g:
@@ -97,10 +98,10 @@ def save_rothe_state(
         ds_p, ds_c, ds_t, ds_RE = g["p"], g["c"], g["t"], g["rothe_error"]
 
         # sanity-check tail shapes
-        if ds_p.shape[1:] != p_shape:
-            raise ValueError(f"'p' tail shape {ds_p.shape[1:]} != current {p_shape}")
-        if ds_c.shape[1:] != c_shape:
-            raise ValueError(f"'c' tail shape {ds_c.shape[1:]} != current {c_shape}")
+        if ds_p.shape[1:] != params_shape:
+            raise ValueError(f"'p' tail shape {ds_p.shape[1:]} != current {params_shape}")
+        if ds_c.shape[1:] != coeffs_shape:
+            raise ValueError(f"'c' tail shape {ds_c.shape[1:]} != current {coeffs_shape}")
 
         idx = ds_t.shape[0]
         ds_p.resize(idx + 1, axis=0)
@@ -108,14 +109,14 @@ def save_rothe_state(
         ds_t.resize(idx + 1, axis=0)
         ds_RE.resize(idx + 1, axis=0)
 
-        ds_p[idx, ...] = p_np
-        ds_c[idx, ...] = c_np
+        ds_p[idx, ...] = params_np
+        ds_c[idx, ...] = coeffs_np
         ds_t[idx] = float(t)
         ds_RE[idx] = float(rothe_error)
     return filename
 
 
-def load_rothe_file(sim_name, splitting_type, path="."):
+def load_rothe_file(sim_name, splitting_type, path="./wave_function_data"):
     """
     Read the entire HDF5 into a dict (numpy arrays).
     """
@@ -127,14 +128,16 @@ def load_rothe_file(sim_name, splitting_type, path="."):
         poly = f["polynomial_string"][()]
         if isinstance(poly, bytes):
             poly = poly.decode("utf-8")
+        params = g["p"][...]
+        coeffs = g["c"][...]
         out = {
             "filename": filename,
             "attrs": dict(f.attrs),
             "polynomial_string": poly,
             "t": g["t"][...],
             "rothe_error": g["rothe_error"][...],
-            "p": g["p"][...],
-            "c": g["c"][...],
+            "params": params,
+            "coeffs": coeffs,
         }
     return out
 
@@ -144,7 +147,7 @@ def _select_and_trim_to_time(filename, t_target):
     Open HDF5 in append mode, trim datasets in-place according to the rules:
       - If t_target exactly exists (within atol), keep up to and including it; delete everything after.
       - If it doesn't exist, keep up to the last t < t_target; delete everything from t >= t_target.
-    Returns dict with last-kept state (p,c,t) to resume from.
+    Returns dict with last-kept state (params, coeffs, t) to resume from.
     """
     if not os.path.exists(filename):
         raise FileNotFoundError(filename)
@@ -162,8 +165,8 @@ def _select_and_trim_to_time(filename, t_target):
             return dict(
                 t=float(t_arr[idx_keep]),
                 idx=int(idx_keep),
-                p=ds_p[idx_keep, ...],
-                c=ds_c[idx_keep, ...],
+                params=ds_p[idx_keep, ...],
+                coeffs=ds_c[idx_keep, ...],
                 trimmed=False,
             )
 
@@ -191,7 +194,7 @@ def _select_and_trim_to_time(filename, t_target):
         return dict(
             t=float(ds_t[idx]),
             idx=int(idx),
-            p=ds_p[idx, ...],
-            c=ds_c[idx, ...],
+            params=ds_p[idx, ...],
+            coeffs=ds_c[idx, ...],
             trimmed=trimmed,
         )
