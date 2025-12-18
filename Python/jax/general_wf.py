@@ -1,9 +1,9 @@
 # TODOs, separated into small bits:
 # DONE # Parse exponential terms into (m, D, 4) arrays
-# Calculate Gaussian squared terms
-# Include exponential terms into the Hamiltonian implementation
-# Include exponential squared terms into the Hamiltonian squared implementation
-# Also include cross-terms
+# DONE Calculate Gaussian squared terms
+# DONE Include exponential terms into the Hamiltonian implementation
+# DONE Include exponential squared terms into the Hamiltonian squared implementation
+# DONE Also include cross-terms
 # Include time-dependent potentials (I guess this is not too hard)
 # Here, it will be easiest to just add a third type of thing in read_strings that includes time explicitly
 # Include freezing the ground state option
@@ -17,10 +17,18 @@ import os
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_level=4"
 
 import jax
+from helpers import get_individual_params
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "high")
 import jax.numpy as jnp
+from gaussian_potential_helpers import (
+    calculate_Gaussian_expectation_values,
+    calculate_squared_Gaussian_potential,
+    get_exponent_subtraction_terms,
+    get_gaussian_pair_terms,
+    parse_exponential_params,
+)
 from jax import jit
 from read_string import obtain_polynomial_squared, read_string
 
@@ -33,11 +41,6 @@ import jax.lax as lax
 
 dtype_real = jnp.float64
 dtype_complex = jnp.complex128
-
-
-def get_individual_params(params):
-    a, b, mu, p = params.transpose(2, 0, 1)
-    return a, b, mu, p
 
 
 @jit
@@ -81,158 +84,6 @@ def propagate_kinetic_analytical(dt, params, coeffs, masses):
 
     new_coeffs = coeffs * gamma
     return new_params, new_coeffs
-
-
-def calculate_squared_Gaussian_potential(
-    gaussian_exponential_params, linear_params, tiny=1e-16
-):
-    # gaussian_exponential_params shape: (m, D, 4) with order [a, b, mu, p] along the last axis
-    m, D, _ = gaussian_exponential_params.shape
-
-    new_Gaussian_exponential_params = jnp.zeros((m * (m + 1) // 2, D, 4), dtype=dtype_real)
-    new_linear_params = jnp.zeros((m * (m + 1) // 2,), dtype=dtype_complex)
-    log_tiny = jnp.log(tiny)
-    count = 0
-    for i in range(m):
-        # params for i (each is shape (D,))
-        a1, b1, mu1, p1 = gaussian_exponential_params[i].T
-        c1 = linear_params[i]
-
-        a1sq = a1**2
-        for j in range(i, m):
-            # params for j
-            a2, b2, mu2, p2 = gaussian_exponential_params[j].T
-            c2 = linear_params[j]
-
-            a2sq = a2**2
-            A1 = a1sq + 1j * b1
-            A2 = a2sq + 1j * b2
-
-            den = a1sq + a2sq  # = a_12^2, shape (D,)
-            new_a = jnp.sqrt(den)  # real, >=0, per-dimension
-            new_b = b1 + b2
-
-            # handle degenerate case den==0 (i.e., a1=a2=0 in that dimension)
-            den_pos = den > 0
-            mu_gen = (a1sq * mu1 + a2sq * mu2) / jnp.where(den_pos, den, 1.0)
-            new_mu = jnp.where(den_pos, mu_gen, 0.5 * (mu1 + mu2))
-
-            # works for both general and degenerate cases
-            new_p = (p1 + p2) + 2 * (b1 * (mu1 - new_mu) + b2 * (mu2 - new_mu))
-
-            # amplitude: c12 = (c1*c2) * exp(sum_d [ ... ])
-            per_dim_log = (
-                -(A1 * mu1**2 + A2 * mu2**2)
-                + (den + 1j * new_b) * new_mu**2
-                - 1j * (p1 * mu1 + p2 * mu2)
-                + 1j * new_p * new_mu
-            )  # shape (D,)
-            log_phase = jnp.sum(per_dim_log)  # scalar complex
-
-            cand_log = jnp.log(c1 * c2) + (log_phase)  # complex scalar
-            cand_log_real = jnp.real(cand_log)
-            # prune tiny magnitudes safely
-            new_c = jnp.where(
-                cand_log_real < log_tiny,
-                jnp.array(0.0 + 0.0j, dtype=dtype_complex),
-                jnp.exp(cand_log),
-            )
-
-            # write params (stack per-dimension)
-            new_params = jnp.stack([new_a, new_b, new_mu, new_p], axis=-1).astype(dtype_real)
-            new_Gaussian_exponential_params = new_Gaussian_exponential_params.at[count].set(
-                new_params
-            )
-
-            # double off-diagonals (i<j), keep diagonals once
-            new_linear_params = new_linear_params.at[count].set(new_c if i == j else 2 * new_c)
-
-            count += 1
-
-    return new_Gaussian_exponential_params, new_linear_params
-
-
-def parse_exponential_params(exponential):
-    try:
-        linear_coefficients, widths, positions = zip(*exponential)
-    except ValueError as e:
-        return None, None
-    m = len(linear_coefficients)
-    D = len(positions[0])
-    exponential_params = jnp.zeros((m, D, 4), dtype=dtype_real)
-    for k in range(m):
-        width = widths[k]
-        pos = positions[k]
-        a_k = jnp.sqrt(width)
-        mu_k = jnp.asarray(pos, dtype=dtype_real)
-        exponential_params = exponential_params.at[k, :, 0].set(a_k)
-        exponential_params = exponential_params.at[k, :, 2].set(mu_k)
-    return jnp.asarray(linear_coefficients, dtype=dtype_complex), exponential_params
-
-
-def get_gaussian_pair_terms(params):
-    a, b, mu, p = get_individual_params(params)
-    alpha = a**2 + 1j * b  # (n,D)
-    ai, aj = alpha.conj()[:, None, :], alpha[None, :, :]
-    gauss_A = ai + aj  # (n,n,D)
-    ai_mui = ai * (mu[:, None, :])
-    ai_mui2 = ai * (mu[:, None, :] ** 2)
-    aj_muj = aj * (mu[None, :, :])
-    aj_muj2 = aj * (mu[None, :, :] ** 2)
-    muipi = mu[:, None, :] * p[:, None, :]
-    mujpj = mu[None, :, :] * p[None, :, :]
-    muipimujpj = 1j * (-mujpj + muipi)
-    pi, pj = p[:, None, :], p[None, :, :]
-    pipj = pj - pi
-    aimui_ajmuj_sum = ai_mui + aj_muj
-    aimuisq_ajmujsq = ai_mui2 + aj_muj2
-    gauss_B = 2 * aimui_ajmuj_sum + 1j * pipj
-    gauss_C = -aimuisq_ajmujsq + muipimujpj
-    return gauss_A, gauss_B, gauss_C
-
-
-def get_exponent_subtraction_terms(gauss_A, gauss_B, gauss_C):
-    center_diag = gauss_B.diagonal(axis1=0, axis2=1) / (2 * gauss_A.diagonal(axis1=0, axis2=1))
-    constant_diag = gauss_C.diagonal(axis1=0, axis2=1) + center_diag**2 * gauss_A.diagonal(
-        axis1=0, axis2=1
-    )
-    exponent_subtraction = constant_diag - 0.5 * jnp.log(gauss_A.diagonal(axis1=0, axis2=1))
-    exponent_subtraction = exponent_subtraction.T
-    full_exponent_subtraction = (
-        exponent_subtraction[:, None, :] + exponent_subtraction[None, :, :]
-    )  # Shape (n,n,D)
-    return full_exponent_subtraction
-
-
-# @jit
-def calculate_Gaussian_expectation_values(params, gaussian_exponential_params, linear_params):
-    n, D, _ = params.shape  # n Gaussians in D dimensions, _ is always 4
-    m, _, _ = gaussian_exponential_params.shape  # m Gaussians in D dimensions, _ is always 4
-    gauss_A, gauss_B, gauss_C = get_gaussian_pair_terms(params)
-    exp_substr_terms = get_exponent_subtraction_terms(gauss_A, gauss_B, gauss_C)
-
-    aK, bK, muK, pK = gaussian_exponential_params.transpose(2, 0, 1)  # (m, D)
-    alphaK = aK**2 + 1j * bK  # (m, D)
-
-    # A replacement of a "for" loop with jax.lax.fori_loop
-    def add_expectation_component(k, acc):
-        ak = alphaK[k]  # (D,)
-        muk = muK[k]  # (D,)
-        pk = pK[k]  # (D,)
-        allA = gauss_A + ak
-        allB = gauss_B + 2 * (ak * muk) + 1j * pk
-        allC = gauss_C - ak * muk**2 - 1j * muk * pk
-        new_centers = allB / (2 * allA)
-        constants = allC + new_centers**2 * allA
-        sum_exponents_all = constants - 0.5 * jnp.log(allA) - 0.5 * exp_substr_terms
-        sum_exponents_ij = jnp.sum(sum_exponents_all, axis=2)  # (n, n)
-        contrib = jnp.exp(sum_exponents_ij) * linear_params[k]  # (n, n)
-        return acc + contrib
-
-    init_vals = jnp.zeros((n, n), dtype=dtype_complex)  # The expectation values <g_i|V|g_j>
-
-    expectation_values = jax.lax.fori_loop(0, m, add_expectation_component, init_vals)
-    return expectation_values  # Sum over all potential Gaussians
 
 
 class ND_potentials:
@@ -455,7 +306,7 @@ class ND_potentials:
 
 class generalPotentialSolver(ND_potentials):
     """
-    Polynomial potential defined by a small DSL string.
+    Polynomial + exponential potential defined by a small tring.
 
     The `polynomial_string` is parsed by `read_string.read_string` and is expected
     to define the dimensionality and a dict of monomials with coefficients.
@@ -466,12 +317,20 @@ class generalPotentialSolver(ND_potentials):
         x0x0: 0.5
         x1x1: 0.5
         x0x0x1: 0.111803
+        exponential
+        1, 0.225345, [0.0, 0.0] # Gaussian with coeff 1, width 0.225345, centered at origin
+        0.2, 0.15, [1.0, 0.0] # Gaussian with coeff .2, width 0.15, centered at (1,0)
 
     Internally, this class also precomputes the squared polynomial (needed for H^2).
     """
 
     def __init__(self, params, polynomial_string):
+        K_max = 4
+
         self.polynomial, self.exponential = read_string(polynomial_string)
+        print(self.polynomial.keys())
+        if list(self.polynomial.keys()) == []:
+            self.polynomial = None
         lin_exp, exponent_exp = parse_exponential_params(self.exponential)
         self.linear_exponential_params = lin_exp
         self.exponential_params = exponent_exp
@@ -484,19 +343,22 @@ class generalPotentialSolver(ND_potentials):
         else:
             self.exponential_squared_params = None
             self.linear_exponential_squared = None
-        self.polynomial_squared = obtain_polynomial_squared(self.polynomial)
-        self._poly_keys = jnp.asarray(list(self.polynomial.keys()), dtype=jnp.int32)
-        self._poly_vals = jnp.asarray(list(self.polynomial.values()), dtype=dtype_complex)
-        self._poly2_keys = jnp.asarray(list(self.polynomial_squared.keys()), dtype=jnp.int32)
-        self._poly2_vals = jnp.asarray(
-            list(self.polynomial_squared.values()), dtype=dtype_complex
-        )
 
-        K_max = 4
-        for key, val in self.polynomial_squared.items():
-            K_max = max(K_max, max(key))
+        if self.polynomial is not None:
+            self.polynomial_squared = obtain_polynomial_squared(self.polynomial)
+            self._poly_keys = jnp.asarray(list(self.polynomial.keys()), dtype=jnp.int32)
+            self._poly_vals = jnp.asarray(list(self.polynomial.values()), dtype=dtype_complex)
+            self._poly2_keys = jnp.asarray(
+                list(self.polynomial_squared.keys()), dtype=jnp.int32
+            )
+            self._poly2_vals = jnp.asarray(
+                list(self.polynomial_squared.values()), dtype=dtype_complex
+            )
+            for key, val in self.polynomial_squared.items():
+                K_max = max(K_max, max(key))
         super().__init__(params, K_max=K_max)
-        self._build_cached_indices()
+        if self.polynomial is not None:
+            self._build_cached_indices()
 
     def _build_cached_indices(self):
         D, Kp1 = self.D, self.moments.shape[-1]
@@ -514,27 +376,133 @@ class generalPotentialSolver(ND_potentials):
 
     def setUpIntermediates(self):
         super().setUpIntermediates()
-        if hasattr(self, "_poly_keys"):
+        print(self.polynomial)
+        if self.polynomial is not None:
             self._build_cached_indices()
 
-    def calculate_V(self, t=0) -> jnp.ndarray:
-        S = self.S if self.S is not None else self.calculate_S()
+    def calculate_polynomial_V(self, S, t=0) -> jnp.ndarray:
+        if self.polynomial is None:
+            return jnp.zeros_like(S)
         M = self._poly_vals.shape[0]
         idx = jnp.broadcast_to(self._idx, self.moments.shape[:-1] + (M,))
         Mn = jnp.take_along_axis(self.moments, idx, axis=-1)  # (n,n,D,M)
         Mprod = jnp.prod(Mn, axis=2)  # (n,n,M)
         return jnp.einsum("ijm,m->ij", S[..., None] * Mprod, self._poly_vals)
 
-    def calculate_V2(self, t=0) -> jnp.ndarray:
+    def calculate_gaussian_V(self, S, t=0) -> jnp.ndarray:
+        if self.exponential_params is None:
+            return jnp.zeros_like(S)
+        returnval = calculate_Gaussian_expectation_values(
+            self.params, self.exponential_params, self.linear_exponential_params
+        )
+        return returnval
+
+    def calculate_gaussian_V2(self, S, t=0) -> jnp.ndarray:
+        if self.exponential_squared_params is None:
+            return jnp.zeros_like(S)
+        returnval = calculate_Gaussian_expectation_values(
+            self.params,
+            self.exponential_squared_params,
+            self.linear_exponential_squared,
+        )
+        return returnval
+
+    def calculate_V(self, t=0):
         S = self.S if self.S is not None else self.calculate_S()
+        pot = self.calculate_polynomial_V(S, t=t)
+        pot += self.calculate_gaussian_V(S, t=t)
+        return pot
+
+    def calculate_polynomial_V2(self, S, t=0) -> jnp.ndarray:
+        if self.polynomial is None:
+            return jnp.zeros_like(S)
         M2 = self._poly2_vals.shape[0]
         idx = jnp.broadcast_to(self._i2, self.moments.shape[:-1] + (M2,))
         Mn = jnp.take_along_axis(self.moments, idx, axis=-1)
         Mprod = jnp.prod(Mn, axis=2)
         return jnp.einsum("ijm,m->ij", S[..., None] * Mprod, self._poly2_vals)
 
-    def calculate_TVVT(self, t=0) -> jnp.ndarray:
+    def calculate_polynomial_gaussian_cross_terms(self, S, t=0) -> jnp.ndarray:
+        # V_poly and V_gauss commute, so the cross term is 2 * <g_i|V_poly V_gauss|g_j>.
+        if (
+            self.exponential_params is None
+            or self.polynomial is None
+            or self.linear_exponential_params is None
+        ):
+            return jnp.zeros_like(S)
+
+        gauss_A, gauss_B, gauss_C = get_gaussian_pair_terms(self.params)
+        exp_substr_terms = get_exponent_subtraction_terms(gauss_A, gauss_B, gauss_C)
+
+        lin_params = self.linear_exponential_params
+        aK, bK, muK, pK = self.exponential_params.transpose(2, 0, 1)  # (m, D)
+        alphaK = aK**2 + 1j * bK  # (m, D)
+
+        dm = self._dm  # (D, M)
+        poly_vals = self._poly_vals
+        max_order = self.K_MAX
+
+        def build_moments(P, R):
+            M0 = jnp.ones_like(P)
+            if max_order == 0:
+                return M0[..., None].astype(dtype_complex)
+
+            M1 = P
+            if max_order == 1:
+                return jnp.stack([M0, M1], axis=-1).astype(dtype_complex)
+
+            def body(carry, k):
+                M_prev, M_curr = carry
+                kf = jnp.asarray(k, dtype=P.real.dtype)
+                M_next = P * M_curr + kf * R * M_prev
+                return (M_curr, M_next), M_next
+
+            (_, _), Ms = lax.scan(body, (M0, M1), jnp.arange(1, max_order))
+            Ms = jnp.moveaxis(Ms, 0, -1)
+            moments = jnp.concatenate([M0[..., None], M1[..., None], Ms], axis=-1)
+            return moments.astype(dtype_complex)
+
+        def add_component(k, acc):
+            ak = alphaK[k]
+            muk = muK[k]
+            pk = pK[k]
+            ck = lin_params[k]
+
+            allA = gauss_A + ak
+            allB = gauss_B + 2 * (ak * muk) + 1j * pk
+            allC = gauss_C - ak * (muk**2) - 1j * muk * pk
+
+            centers = allB / (2 * allA)
+            constants = allC + centers**2 * allA
+            sum_exponents = constants - 0.5 * jnp.log(allA) - 0.5 * exp_substr_terms
+            prefactor = jnp.exp(jnp.sum(sum_exponents, axis=2)) * ck
+
+            Pk = centers
+            Rk = 1.0 / (2.0 * allA)
+            moments = build_moments(Pk, Rk)  # (n,n,D,K_max+1)
+
+            idx = jnp.clip(dm, 0, moments.shape[-1] - 1)
+            idx = jnp.broadcast_to(idx, moments.shape[:-1] + (dm.shape[1],))
+            Mn = jnp.take_along_axis(moments, idx, axis=-1)
+            Mprod = jnp.prod(Mn, axis=2)  # (n,n,M)
+
+            contrib = jnp.einsum("ijm,m->ij", prefactor[..., None] * Mprod, poly_vals)
+            return acc + contrib
+
+        m = alphaK.shape[0]
+        cross = jax.lax.fori_loop(0, m, add_component, jnp.zeros_like(S, dtype=dtype_complex))
+        return 2.0 * cross
+
+    def calculate_V2(self, t=0) -> jnp.ndarray:
         S = self.S if self.S is not None else self.calculate_S()
+        polynomial_V2 = self.calculate_polynomial_V2(S, t=t)
+        gaussian_V2 = self.calculate_gaussian_V2(S, t=t)
+        polynomial_gaussian_cross = self.calculate_polynomial_gaussian_cross_terms(S, t=t)
+        return polynomial_V2 + gaussian_V2 + polynomial_gaussian_cross
+
+    def calculate_polynomial_kinetic_cross_terms(self, S, t=0) -> jnp.ndarray:
+        if self.polynomial is None:
+            return jnp.zeros_like(S, dtype=dtype_complex)
         k, y, bj = self.tilde_k, self.tilde_y, self.beta_j
 
         M = self._poly_vals.shape[0]
@@ -563,6 +531,75 @@ class generalPotentialSolver(ND_potentials):
         term = S[..., None] * (jnp.prod(Mn, axis=2) * jnp.sum(vt_coeff, axis=2))  # (n,n,M)
         VT = jnp.einsum("ijm,m->ij", term, self._poly_vals)
         return VT + VT.conj().T
+
+    def calculate_gaussian_kinetic_cross_terms(self, S, t=0) -> jnp.ndarray:
+        """Compute VT for Gaussian potentials (real V), return VT+VT†."""
+        if self.exponential_params is None or self.linear_exponential_params is None:
+            return jnp.zeros_like(S, dtype=dtype_complex)
+
+        gauss_A, gauss_B, gauss_C = get_gaussian_pair_terms(self.params)
+        exp_substr_terms = get_exponent_subtraction_terms(gauss_A, gauss_B, gauss_C)
+
+        aK, bK, muK, pK = self.exponential_params.transpose(2, 0, 1)
+        alphaK = aK**2  # real, potentials are real (b=p=0)
+        lin_params = self.linear_exponential_params
+
+        alpha_j = (self.a**2 + 1j * self.b)[None, :, :]  # (1,n,D)
+        mu_j = self.mu[None, :, :]  # (1,n,D)
+        p_j = self.p[None, :, :]  # (1,n,D)
+
+        def add_component(k, acc):
+            ak = alphaK[k]  # (D,)
+            muk = muK[k]  # (D,)
+            ck = lin_params[k]
+
+            allA = gauss_A + ak  # (n,n,D)
+            allB = gauss_B + 2 * (ak * muk)  # (n,n,D)
+            allC = gauss_C - ak * (muk**2)  # (n,n,D)
+
+            mean = allB / (2 * allA)  # (n,n,D)
+            var = 1.0 / (2.0 * allA)  # (n,n,D)
+
+            constants = allC + mean**2 * allA
+            sum_exponents = constants - 0.5 * jnp.log(allA) - 0.5 * exp_substr_terms
+            prefactor = jnp.exp(jnp.sum(sum_exponents, axis=2)) * ck  # (n,n)
+
+            # Moments relative to potential center (mu_k) and basis center (mu_j)
+            E1_k = mean - muk  # (n,n,D)
+            E2_k = var + E1_k**2
+
+            E_y = mean - mu_j  # (n,n,D)
+            E_y2 = var + E_y**2
+            Cov_kj = var + E1_k * E_y
+
+            # VT matrix element (no hermitian symmetrization here)
+            term1 = -0.5 * jnp.sum(4 * (ak**2) * E2_k - 2 * ak, axis=2)  # (n,n)
+
+            term2_core = (-2 * ak)[None, None, :] * (
+                (-2 * alpha_j) * Cov_kj + 1j * p_j * E1_k
+            )  # (n,n,D)
+            term2 = -jnp.sum(term2_core, axis=2)  # (n,n)
+
+            lap_factor = (
+                -2 * alpha_j + 4 * (alpha_j**2) * E_y2 - 4j * alpha_j * p_j * E_y - p_j**2
+            )  # (n,n,D)
+            term3 = -jnp.sum(lap_factor, axis=2)  # (n,n)
+
+            contrib = prefactor * (term1 + term2 + term3)
+            return acc + contrib
+
+        m = alphaK.shape[0]
+        VT = jax.lax.fori_loop(0, m, add_component, jnp.zeros_like(S, dtype=dtype_complex))
+        return VT + VT.conj().T
+
+    def calculate_TVVT(self, t=0) -> jnp.ndarray:
+        S = self.S if self.S is not None else self.calculate_S()
+        polynomial_kinetic_cross = self.calculate_polynomial_kinetic_cross_terms(S, t=t)
+        gaussian_kinetic_cross = self.calculate_gaussian_kinetic_cross_terms(S, t=t)
+        # The kinetic operator carries a global -1/2; the VT/TV analytic
+        # expressions above were derived for the bare Laplacian. Apply the
+        # missing 1/2 here to avoid overestimating the cross term.
+        return 0.5 * (polynomial_kinetic_cross + gaussian_kinetic_cross)
 
     def calculate_H(self, t=0):
         H = self.calculate_T()

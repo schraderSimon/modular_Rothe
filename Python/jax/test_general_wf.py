@@ -12,6 +12,13 @@ from general_wf import (
     dtype_real,
     generalPotentialSolver,
 )
+from quadrature_utils import (
+    eval_gaussian_basis,
+    eval_gaussian_potential,
+    eval_polynomial,
+    quadrature_cross_terms,
+    quadrature_gaussian_kinetic_cross,
+)
 
 
 def test_squared_gaussian_potential():
@@ -187,8 +194,123 @@ def test_moments():
     print("✓ Test completed (visual inspection required)")
 
 
+def test_polynomial_gaussian_cross_terms_quadrature():
+    """Numerically validate polynomial–Gaussian cross terms in 2D via quadrature."""
+
+    # Complex basis (nonzero b,p) with real potential (b=p=0)
+    n, D = 2, 2
+    params = jnp.zeros((n, D, 4), dtype=dtype_real)
+    params = params.at[:, :, 0].set(0.8)  # width a
+    params = params.at[:, :, 1].set(jnp.array([[0.3, -0.25], [-0.15, 0.2]]))
+    params = params.at[0, :, 2].set(jnp.array([0.0, -0.5]))
+    params = params.at[1, :, 2].set(jnp.array([0.7, 0.6]))
+    params = params.at[0, :, 3].set(jnp.array([0.4, -0.2]))
+    params = params.at[1, :, 3].set(jnp.array([-0.3, 0.35]))
+
+    polynomial_string = """
+    dimension 2
+    polynomial
+    x0: 0.3
+    x1x1: -0.2
+    x0x1: 0.12
+    x0x0x1: -0.05
+    exponential
+    0.9, 0.6, [ -0.4, 0.8 ]
+    0.4, 0.7, [ 1.1, -0.3 ]
+    0.3, 0.9, [ -1.2, -0.6 ]
+    """
+
+    # Parse potentials directly from string (no manual assignment)
+    solver = generalPotentialSolver(params, polynomial_string)
+    exp_params = solver.exponential_params
+    lin_params = solver.linear_exponential_params
+
+    S = solver.calculate_S()
+    analytic_cross = solver.calculate_polynomial_gaussian_cross_terms(S)
+
+    # Quadrature grid
+    L = 6.0
+    N = 181  # fine grid for reasonable accuracy
+    xs = np.linspace(-L, L, N)
+    ys = np.linspace(-L, L, N)
+    dx = xs[1] - xs[0]
+    dy = ys[1] - ys[0]
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+
+    numeric_cross = quadrature_cross_terms(
+        params=params,
+        poly_dict=solver.polynomial,
+        exp_params=exp_params,
+        lin_params=lin_params,
+        xs=xs,
+        ys=ys,
+    )
+    print("Numeric cross terms:\n", numeric_cross)
+    print("Analytic cross terms:\n", np.array(analytic_cross))
+    max_err = np.max(np.abs(numeric_cross - np.array(analytic_cross)))
+    rel_err = max_err / (np.max(np.abs(numeric_cross)) + 1e-14)
+
+    print("\n" + "=" * 60)
+    print("TEST: polynomial–Gaussian cross terms (quadrature vs analytic)")
+    print("=" * 60)
+    print(f"Max abs error: {max_err:.3e}")
+    print(f"Rel error:     {rel_err:.3e}")
+
+    assert rel_err < 5e-3, "Cross term deviates from quadrature reference"
+
+
+def test_gaussian_kinetic_cross_terms_quadrature():
+    """Quadrature check for Gaussian–kinetic cross term {T,V_gauss} in 2D."""
+
+    n, D = 2, 2
+    params = jnp.zeros((n, D, 4), dtype=dtype_real)
+    params = params.at[:, :, 0].set(0.9)
+    params = params.at[:, :, 1].set(jnp.array([[0.2, -0.15], [-0.1, 0.18]]))
+    params = params.at[0, :, 2].set(jnp.array([-0.2, 0.4]))
+    params = params.at[1, :, 2].set(jnp.array([0.9, -0.3]))
+    params = params.at[0, :, 3].set(jnp.array([0.35, -0.25]))
+    params = params.at[1, :, 3].set(jnp.array([-0.28, 0.42]))
+
+    polynomial_string = """
+    dimension 2
+    polynomial
+    x0: 0.1
+    x1: -0.05
+    exponential
+    1.1, 0.7, [ -0.5, 0.9 ]
+    0.6, 0.8, [ 1.0, -0.4 ]
+    """
+
+    solver = generalPotentialSolver(params, polynomial_string)
+    exp_params = solver.exponential_params
+    lin_params = solver.linear_exponential_params
+
+    S = solver.calculate_S()
+    analytic = solver.calculate_gaussian_kinetic_cross_terms(S)
+
+    L = 6.0
+    N = 181
+    xs = np.linspace(-L, L, N)
+    ys = np.linspace(-L, L, N)
+
+    numeric = quadrature_gaussian_kinetic_cross(params, exp_params, lin_params, xs, ys)
+
+    max_err = np.max(np.abs(numeric - np.array(analytic)))
+    rel_err = max_err / (np.max(np.abs(numeric)) + 1e-14)
+
+    print("\n" + "=" * 60)
+    print("TEST: Gaussian–kinetic cross term (quadrature vs analytic)")
+    print("=" * 60)
+    print(f"Max abs error: {max_err:.3e}")
+    print(f"Rel error:     {rel_err:.3e}")
+
+    assert rel_err < 7e-3, "Gaussian–kinetic cross term deviates from quadrature reference"
+
+
 if __name__ == "__main__":
     # Run all tests
     test_squared_gaussian_potential()
     test_gaussian_expectation_values()
     test_moments()
+    test_polynomial_gaussian_cross_terms_quadrature()
+    test_gaussian_kinetic_cross_terms_quadrature()
