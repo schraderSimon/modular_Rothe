@@ -3,8 +3,6 @@ import time
 
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_level=4"
 
-import sys
-
 import numpy as np
 from scipy.optimize import minimize
 
@@ -418,6 +416,7 @@ class RotheSolver:
             T_inv = L  # z = L p
 
         # 4) Initial inverse Hessian (possibly BB1-scaled) in theta-space
+        """
         hess_inv_default = make_initial_hessian_y(N, grad_theta0_norm)
 
         hess_inv0 = maybe_apply_bb1_scaling(
@@ -430,7 +429,11 @@ class RotheSolver:
             t=self.t,
             hess_inv_default=hess_inv_default,
         )
-
+        """
+        hess_inv0 = np.zeros((N, N), dtype=np.float64)
+        for i in range(N):
+            hess_inv0[i, i] = 1.0
+        hess_inv0 = 1e-8 * hess_inv0
         # 5) Run BFGS in theta-space
         solution = minimize(
             f_and_g_theta,
@@ -510,7 +513,9 @@ class RotheSolver:
         print(f"Time taken for {n} gradient evaluations: {time_taken:.2f} seconds")
         return time_taken
 
-    def propagate(self, num_iterations, params_init=None, coeffs_init=None, maxiter=100):
+    def propagate(
+        self, num_iterations, params_init=None, coeffs_init=None, maxiter=100, renormalize=True
+    ):
         if params_init is not None:
             self.params_old = jnp.asarray(params_init)
         if coeffs_init is not None:
@@ -522,13 +527,11 @@ class RotheSolver:
             self.t += self.dt
             dt = self.dt
             start = time.time()
-            if self.splitting_type == "none":  # If no splitting is used
+            if self.splitting_type in (None, "none"):
                 params_solved, coeffs_new, final_RE, nit = self.find_next_timestep_solution(
                     startguess, maxiter=maxiter
                 )
-            elif (
-                self.splitting_type == "kinetic"
-            ):  # If analytical propagation and splitting is used
+            elif self.splitting_type == "kinetic":
                 # Half step with T
 
                 params_old_temp = self.params_old.copy()
@@ -548,9 +551,24 @@ class RotheSolver:
                 )
                 self.params_old = params_old_temp  # Restore to original values
                 self.coeffs_old = coeffs_old_temp
+            else:
+                raise ValueError(
+                    f"Unknown splitting_type {self.splitting_type!r}; expected 'none' or 'kinetic'."
+                )
+            if np.isrealobj(self.t) and not np.iscomplexobj(self.t):
+                time_str = f"{float(np.real(self.t)):.2f}"
+            else:
+                time_str = str(self.t)
             print(
-                f"Time {self.t:.2f}:Squared Rothe error: {final_RE:.3e}, Number of iterations: {nit}"
+                f"Time {time_str}:Squared Rothe error: {final_RE:.3e}, Number of iterations: {nit}"
             )
+            if renormalize:
+                S, H, _ = self.SHH2(
+                    t=self.t, params=params_solved, splitting_type=self.splitting_type
+                )
+                norm = jnp.real(jnp.conj(coeffs_new) @ S @ coeffs_new)
+                print("Norm before renormalization: ", norm)
+                coeffs_new = coeffs_new / norm
             if self.name is not None:
                 save_rothe_state(
                     self.name,
@@ -573,6 +591,7 @@ class RotheSolver:
 
             self.params_oldold = self.params_old
             self.params_old = params_solved
+
             self.coeffs_old = coeffs_new
             end = time.time()
             time_taken = end - start
@@ -607,7 +626,7 @@ class RotheSolver:
 
         self.params_old = jnp.asarray(sel["params"])
         self.coeffs_old = jnp.asarray(sel["coeffs"])
-        self.t = float(sel["t"])
+        self.t = np.asarray(sel["t"]).item()
         self.params_oldold = None  # reset history across resume
         return sel  # contains t, idx, trimmed flag
 
@@ -631,15 +650,16 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
     """
 
     def rothe_error(
-        params_new, params_old, coeffs_old, SHH2, t, dt, return_cnew=False, lambda_=1e-8
+        params_new, params_old, coeffs_old, SHH2, t, dt, return_cnew=False, lambda_=1e-10
     ):
+        splitting_eff = "none" if splitting_type in (None, "none") else splitting_type
         ngo = params_old.shape[0]
         dtsq4 = dt**2 / 4
         params_concat = jnp.concatenate(
             (params_old, params_new), axis=0
         )  # New shape: (2*n,N_b)
         S_full, H_full, H2_full = SHH2(
-            t=t + dt / 2, params=params_concat, splitting_type=splitting_type
+            t=t + dt / 2, params=params_concat, splitting_type=splitting_eff
         )
         S_tilde_full = S_full + dtsq4 * H2_full
         rho_mat = (
@@ -653,7 +673,10 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         # L = jnp.linalg.cholesky(S_reg[ngo:, ngo:])  # Hermitian PD
         # c_new = jsp.linalg.solve_triangular(L, rho_vec, lower=True, trans="N")
         # c_new = jsp.linalg.solve_triangular(L.conj().T, c_new, lower=False, trans="N")
-        coeffs_new = solve(S_reg[ngo:, ngo:], rho_vec, assume_a="her")
+        # if jnp.abs(dt-jnp.real(dt))>1e-12:
+        #    coeffs_new = solve(S_reg[ngo:, ngo:], rho_vec) #Hermiticity not assumed for complex time steps
+        # else:
+        coeffs_new = solve(S_reg[ngo:, ngo:], rho_vec)
         overlap_term = jnp.conj(coeffs_old) @ S_tilde_full[:ngo, :ngo] @ coeffs_old
         projection_term = jnp.real(jnp.conj(rho_vec).T @ coeffs_new)
         rothe_error = jnp.real(overlap_term - projection_term)

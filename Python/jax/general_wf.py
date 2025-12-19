@@ -328,7 +328,6 @@ class generalPotentialSolver(ND_potentials):
         K_max = 4
 
         self.polynomial, self.exponential = read_string(polynomial_string)
-        print(self.polynomial.keys())
         if list(self.polynomial.keys()) == []:
             self.polynomial = None
         lin_exp, exponent_exp = parse_exponential_params(self.exponential)
@@ -376,7 +375,6 @@ class generalPotentialSolver(ND_potentials):
 
     def setUpIntermediates(self):
         super().setUpIntermediates()
-        print(self.polynomial)
         if self.polynomial is not None:
             self._build_cached_indices()
 

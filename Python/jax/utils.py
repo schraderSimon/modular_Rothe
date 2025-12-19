@@ -30,7 +30,7 @@ def divide_outer(a, b):
     return jnp.divide(a[:, None], b[None, :])
 
 
-def orthonormalize_matrices(S, H, H2, eps=1e-12):
+def orthonormalize_matrices(S, H, H2, eps=1e-10, return_Smin05=False):
     """
     Transform overlap and Hamiltonian matrices to orthonormal basis.
 
@@ -46,7 +46,7 @@ def orthonormalize_matrices(S, H, H2, eps=1e-12):
     wmax = jnp.max(jnp.real(w))
     keep = jnp.real(w) > eps * wmax
     U1, w1 = U[:, keep], w[keep]
-    X = U1 * (1.0 / jnp.sqrt(w1))[None, :]
+    X = U1 * (1.0 / jnp.sqrt(w1))[None, :]  # This is S^(-1/2) - ish
 
     # Transform matrices to orthonormal basis
     H_orth = X.conj().T @ H_sym @ X
@@ -54,8 +54,10 @@ def orthonormalize_matrices(S, H, H2, eps=1e-12):
 
     # Diagonalize H in orthonormal basis
     eigvals, eigvecs_orth = jnp.linalg.eigh(H_orth)
-
-    return eigvals, eigvecs_orth, H_orth, H2_orth
+    if return_Smin05:
+        return eigvals, eigvecs_orth, H_orth, H2_orth, X
+    else:
+        return eigvals, eigvecs_orth, H_orth, H2_orth
 
 
 def calculate_variance(state_vec, H2_orth, energy):
