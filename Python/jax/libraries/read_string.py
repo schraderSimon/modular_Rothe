@@ -1,13 +1,20 @@
 import ast
 import re
+import sys
+
+import sympy as sp
+from numpy import cos, exp, pi, sin
+
+import jax.numpy as jnp
 
 
 def clean_up_lines(lines: list[str]) -> list[str]:
     """
     Remove empty lines from the given list of lines.
     Also removes comments (anything after a '#').
+    Also converts to lowercase.
     """
-    return [line.split("#")[0].strip() for line in lines if line.strip() != ""]
+    return [line.split("#")[0].strip().lower() for line in lines if line.strip() != ""]
 
 
 def find_string(lines: list[str], target: str) -> int:
@@ -20,8 +27,18 @@ def find_string(lines: list[str], target: str) -> int:
 def make_polynomial(poly_terms, dimension):
     poly_list = []
     polynomial = {}
+    t = sp.symbols("t")
     for line_idx, raw in enumerate(poly_terms):  # outer index ≠ 'i'
-        poly, val = raw.split(":")
+        splitted = raw.split(":")
+        poly, val = splitted
+        val = val.strip()
+        try:
+            float(val)
+            val = float(val)
+        except:
+            expr = sp.sympify(val)
+            f = sp.lambdify(t, expr, modules="jax")
+            val = f
         line_vals = []
         for d in range(dimension):  # use 'd' not 'i'
             hits = re.findall(rf"x{d}(?!\d)", poly)  # exact matches only
@@ -29,7 +46,7 @@ def make_polynomial(poly_terms, dimension):
         if line_vals in poly_list:
             raise ValueError(f"Duplicate polynomial found at line {line_idx + 3}: {raw}")
         poly_list.append(line_vals)
-        polynomial[tuple(line_vals)] = float(val.strip())
+        polynomial[tuple(line_vals)] = val
     return polynomial
 
 
@@ -48,21 +65,74 @@ def split_up_string(string: str) -> tuple[int, list[str], list[str]]:
     dimension = int(lines[0].split()[1])
     poly_pos = find_string(lines, "polynomial")
     exponential_pos = find_string(lines, "exponential")
+    constants_pos = find_string(lines, "constants")
+    if constants_pos == -1:
+        constants_pos = len(lines)  # Set to end if not found
     if poly_pos == -1 and exponential_pos == -1:
         raise ValueError("No 'polynomial' or 'exponential' section found in the string.")
+    assert (
+        constants_pos >= exponential_pos and constants_pos >= poly_pos
+    ) or constants_pos == -1, "Constants section must be at the end."
     exponential_terms = []
     poly_terms = []
+    constants = []
     if poly_pos < exponential_pos and exponential_pos != -1:
-        if poly_pos != -1:
+        # If polynomial comes first
+        if poly_pos != -1:  # And if polynomial section exists
             poly_terms = lines[
-                poly_pos + 1 : exponential_pos if exponential_pos != -1 else None
+                poly_pos + 1 : exponential_pos if exponential_pos != -1 else constants_pos
             ]
-        exponential_terms = lines[exponential_pos + 1 :]
-    elif exponential_pos < poly_pos and poly_pos != -1:
-        poly_terms = lines[poly_pos + 1 :]
-        if exponential_pos != -1:
+        exponential_terms = lines[exponential_pos + 1 : constants_pos]
+    elif exponential_pos < poly_pos and poly_pos != -1:  # If exponential comes first
+        poly_terms = lines[poly_pos + 1 : constants_pos]
+        if exponential_pos != -1:  # If exponential section exists
             exponential_terms = lines[exponential_pos + 1 : poly_pos]
+    constant_lines = lines[constants_pos + 1 :]
+    poly_terms, exponential_terms = insert_constants(
+        poly_terms, exponential_terms, constant_lines
+    )
     return dimension, poly_terms, exponential_terms
+
+
+def insert_constants(
+    poly_terms: list[str], exponential_terms: list[str], constant_lines: list[str]
+) -> tuple[list[str], list[str]]:
+    """
+    Replace constants in polynomial and exponential terms with their values.
+
+    Args:
+        poly_terms (list[str]): List of polynomial term strings.
+        exponential_terms (list[str]): List of exponential term strings.
+        constant_lines (list[str]): List of constant definition strings.
+
+    Returns:
+        tuple: Updated polynomial and exponential term lists.
+    """
+    exponential_terms_new = []
+    poly_terms_new = []
+    constant_value_dict: dict[str, str] = {}
+    for i in range(len(constant_lines)):
+        line = constant_lines[i]
+        constant, value = line.split(":")
+        constant = constant.strip()
+        value = value.strip()
+        constant_value_dict[constant] = value
+    try:
+        constant_value_dict["pi"]
+    except KeyError:
+        constant_value_dict["pi"] = str(pi)
+    for constant, value in constant_value_dict.items():
+        for term in poly_terms:
+            newterm = term.replace(constant, value)
+            poly_terms_new.append(newterm)
+        for term in exponential_terms:
+            newterm = term.replace(constant, value)
+            exponential_terms_new.append(newterm)
+        exponential_terms = exponential_terms_new
+        poly_terms = poly_terms_new
+        exponential_terms_new = []
+        poly_terms_new = []
+    return poly_terms, exponential_terms
 
 
 def get_exponential_coeffs(string: str) -> tuple[float, float, list[float]]:
@@ -112,7 +182,7 @@ def read_string(string: str):
     return polynomial, exponential
 
 
-def obtain_polynomial_squared(polynomial):
+def obtain_polynomial_squared(polynomial, t=0):
     """
     Obtain the squared polynomial coefficients from the given polynomial.
 
@@ -123,16 +193,18 @@ def obtain_polynomial_squared(polynomial):
         list: List of lists with squared polynomial coefficients.
     """
     result = {}
-    iterator = list(polynomial.items())
-    for i, (vars1, coeff1) in enumerate(iterator):
-        for j, (vars2, coeff2) in enumerate(iterator):
+    for i, (vars1, coeff1) in enumerate(polynomial.items()):
+        for j, (vars2, coeff2) in enumerate(polynomial.items()):
             if i < j:
                 continue
             duplicator = (
                 1 if i == j else 2
             )  # Take into account double-counting of non-diagonal terms
             new_vars = [v1 + v2 for v1, v2 in zip(vars1, vars2)]
-            new_coeff = coeff1 * coeff2 * duplicator
+            c1 = coeff1 if not callable(coeff1) else float(coeff1(t))
+            c2 = coeff2 if not callable(coeff2) else float(coeff2(t))
+
+            new_coeff = c1 * c2 * duplicator
             result[tuple(new_vars)] = result.get(tuple(new_vars), 0) + new_coeff
     return result
 
@@ -140,11 +212,18 @@ def obtain_polynomial_squared(polynomial):
 if __name__ == "__main__":
     example_string = """
         dimension 4
+        exponential
+        1.0, 0.5, [0.0, 0.0, 0.0, 0.0]
         polynomial
         x0x1: 2
         x2x3: 1
         x0x2: 1
         x1x3: -1
+        x0: E0*sin(pi**2/N_T*t)**2*sin(omega*t) # Example of a time-dependent string
+        constants
+        omega: 0.057
+        E0: 0.06
+        N_T: 4
         """
     polynomial, exponential = read_string(example_string)
     polynomial_squared = obtain_polynomial_squared(polynomial)

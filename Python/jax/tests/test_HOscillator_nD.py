@@ -1,10 +1,20 @@
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from math import comb
 
 import numpy as np
 
 import jax.numpy as jnp
-from general_wf import generalPotentialSolver
-from utils import _symh, calculate_variance, eigh_canonical, orthonormalize_matrices
+from libraries.general_wf import generalPotentialSolver
+from libraries.utils import (
+    _symh,
+    calculate_variance,
+    eigh_canonical,
+    orthonormalize_matrices,
+)
 
 
 def create_harmonic_oscillator_string(D, omega=1.0):
@@ -92,7 +102,7 @@ def test_groundstate_nD(Dmax):
         gs_energy = groundstate_energy_nD(params, polynomial_string)
         assert jnp.isclose(gs_energy, expected_energy, rtol=1e-10)
 
-    print("✓ Ground state energy test passed!\n")
+    print("✓ Ground state energy test passed!")
 
 
 def _test_dimension(D, num_gaussians, num_levels):

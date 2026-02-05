@@ -1,9 +1,14 @@
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 
-from general_wf import *
-from utils import calculate_variance, orthonormalize_matrices
+from libraries.general_wf import *
+from libraries.utils import calculate_variance, orthonormalize_matrices
 
-df = pd.read_csv("gaussian_Coulomb/coeffs_mu100_N20.csv")
+df = pd.read_csv("gaussian_Coulomb/coeffs_mu=100_N=19.csv")
 lincoeffs = df["linear"]
 width = df["nonlinear"]
 x = np.linspace(0, 10, 1000)
@@ -27,7 +32,7 @@ hydrogen_string = """
 for lc, w in zip(lincoeffs, width):
     hydrogen_string += f"{-lc}, {w}, [0.0, 0.0, 0.0]\n"
 
-n = 30  # use a modestly larger basis so the ground-state energy converges to -0.5
+n = 20  # use a modestly larger basis so the ground-state energy converges to -0.5
 random_widths = [
     0.27718554582694666,
     0.43691440160201783,
@@ -42,6 +47,7 @@ random_widths = [
     39.596193778751754,
     67.8663025891332,
 ]
+random_widths = np.logspace(-2, 2, n, dtype=jnp.float64)
 n = len(random_widths)
 intial_params = jnp.zeros((n, 3, 4), dtype=jnp.float64)
 
@@ -50,7 +56,7 @@ for i in range(n):
 hydrogen_wf = generalPotentialSolver(intial_params, hydrogen_string)
 
 S = hydrogen_wf.calculate_S()
-
+S = S + 1e-8 * jnp.eye(S.shape[0], dtype=S.dtype)  # Regularization for stability
 H = hydrogen_wf.calculate_H()
 H2 = hydrogen_wf.calculate_H2()
 result = orthonormalize_matrices(S, H, H2, return_Smin05=True)

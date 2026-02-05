@@ -14,6 +14,7 @@ def save_rothe_state(
     rothe_error,
     params,
     coeffs,
+    dipole_moment=None,
     compression="gzip",
     compression_opts=4,
     path="./wave_function_data",
@@ -145,6 +146,26 @@ def save_rothe_state(
         ds_c[idx, ...] = coeffs_np
         ds_t[idx] = t_scalar if complex_time else float(np.real(t_scalar))
         ds_RE[idx] = float(rothe_error)
+
+        # Store dipole moment if provided
+        if dipole_moment is not None:
+            dipole_np = np.asarray(dipole_moment)
+            dipole_shape = tuple(dipole_np.shape)
+
+            if "dipole" not in g:
+                g.create_dataset(
+                    "dipole",
+                    shape=(0,) + dipole_shape,
+                    maxshape=(None,) + dipole_shape,
+                    chunks=(1,) + dipole_shape,
+                    dtype=dipole_np.dtype,
+                    **_kwargs(),
+                )
+
+            ds_dipole = g["dipole"]
+            ds_dipole.resize(idx + 1, axis=0)
+            ds_dipole[idx, ...] = dipole_np
+
     return filename
 
 
@@ -171,6 +192,9 @@ def load_rothe_file(sim_name, splitting_type, path="./wave_function_data"):
             "params": params,
             "coeffs": coeffs,
         }
+        # Load dipole moment if it exists
+        if "dipole" in g:
+            out["dipole"] = g["dipole"][...]
     return out
 
 
@@ -178,8 +202,10 @@ def _select_and_trim_to_time(filename, t_target):
     """
     Open HDF5 in append mode, trim datasets in-place according to the rules:
       - If t_target exactly exists (within atol), keep up to and including it; delete everything after.
-      - If it doesn't exist and times are real, keep up to the last t < t_target; delete everything from t >= t_target.
-      - If times are complex (imaginary propagation), keep up to the last step whose |t| < |t_target|.
+      - If t_target is beyond the latest saved time, raise an error (no data available that far).
+      - If it doesn't exist but is within the saved range:
+        - For real time: keep up to the last t < t_target; delete everything from t >= t_target.
+        - For complex/imaginary time: keep up to the last step whose |t| < |t_target|.
     Returns dict with last-kept state (params, coeffs, t) to resume from.
     """
     if not os.path.exists(filename):
@@ -210,6 +236,22 @@ def _select_and_trim_to_time(filename, t_target):
         if exact.size > 0:
             keep_len = int(exact[-1] + 1)  # include the exact match
         else:
+            # Check if t_target is beyond the available data
+            t_max = t_arr[-1]  # latest saved time
+            if complex_time:
+                # For imaginary time propagation, "beyond" means larger magnitude
+                target_beyond = np.abs(t_target) > np.abs(t_max) + atol
+            else:
+                # For real time, "beyond" means larger value
+                target_beyond = np.real(t_target) > np.real(t_max) + atol
+
+            if target_beyond:
+                raise ValueError(
+                    f"Requested t={t_target} is beyond the latest saved time t={t_max} "
+                    f"in {os.path.basename(filename)}. Use t_start=None to resume from the latest."
+                )
+
+            # t_target is within the saved range but not an exact match - trim to before it
             if complex_time:
                 lt = np.where(np.abs(t_arr) < np.abs(t_target) - atol)[0]
             else:

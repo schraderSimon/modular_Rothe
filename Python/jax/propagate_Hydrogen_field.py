@@ -1,13 +1,10 @@
-import sys
-
 import pandas as pd
 
 import jax.numpy as jnp
 from libraries.file_handling import save_rothe_state
 from libraries.general_wf import generalPotentialSolver
 from libraries.jax_Rothe import RotheSolver, setUpRotheErrorAndGradient_jit
-
-sys.path.append(".")  # Adjust path as needed
+from read_best_coefficients import read_best_coefficients
 
 num_gauss_potential = 21
 num_gauss_wavefunction = 50
@@ -17,27 +14,24 @@ width = df["nonlinear"]
 hydrogen_string = """
     dimension 3
     polynomial
-    x2: sin(0.057*t)
+    x2: E_0*sin(omega*t)*sin(omega*t/N_T/2)**2
     exponential
     """
+#
+
 for lc, w in zip(lincoeffs, width):
     hydrogen_string += f"{-lc}, {w}, [0.0, 0.0, 0.0]\n"
+hydrogen_string += f"constants\nN_T: 3\nomega: 0.057\nE_0: 0.06"
+
 n = num_gauss_wavefunction
-initial_linear_coeffs = jnp.ones(n, dtype=jnp.complex128)
-
-
-n = len(
-    initial_linear_coeffs
-)  # use a modestly larger basis so the ground-state energy converges to -0.5
-random_widths = jnp.logspace(-1, 2, n, dtype=jnp.float64)
-n = len(random_widths)
-params_init = jnp.zeros((n, 3, 4), dtype=jnp.float64)
-
-for i in range(n):
-    params_init = params_init.at[i, :, 0].set(random_widths[i])  # Isotropic gaussians
+initial_linear_coeffs, params_init = read_best_coefficients(
+    num_gauss_wavefunction=num_gauss_wavefunction, num_gauss_potential=num_gauss_potential
+)
+print(initial_linear_coeffs.shape)
+print(params_init.shape)
 hydrogen_wf = generalPotentialSolver(params_init, hydrogen_string)
 Smat = hydrogen_wf.calculate_S()
-dt = -5j
+dt = 0.2
 rothe_error, rothe_vg_jit = setUpRotheErrorAndGradient_jit(splitting_type="none")
 
 D = 3
@@ -87,7 +81,6 @@ rothesolver = RotheSolver(
     polynomial_string=hydrogen_string,
     out_dir="./wave_function_data",
 )
-print(f"Initial Rothe error: {initial_error/abs(dt)**2}")
 nsteps = int(abs(1000 / dt))
 try:
     info = rothesolver.resume_from_file(t_start=None)  # resume from latest saved time
@@ -107,6 +100,6 @@ except FileNotFoundError:
     )
     print("No prior file. Starting fresh at t=0.")
 
-rothesolver.propagate(nsteps, maxiter=10)
+rothesolver.propagate(nsteps, maxiter=300)
 # print("Using %d Gaussians in %dD Henon-Heiles potential" % (n, D))
 # rothesolver.evaluate_gradient_n_times(params_init=params_init, coeffs_init=coeffs_init, n=1000)

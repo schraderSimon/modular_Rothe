@@ -1,3 +1,8 @@
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 """
 Tests for general_wf.py functions
 """
@@ -5,14 +10,14 @@ Tests for general_wf.py functions
 import numpy as np
 
 import jax.numpy as jnp
-from general_wf import (
+from libraries.general_wf import (
     calculate_Gaussian_expectation_values,
     calculate_squared_Gaussian_potential,
     dtype_complex,
     dtype_real,
     generalPotentialSolver,
 )
-from quadrature_utils import (
+from libraries.quadrature_utils import (
     eval_gaussian_basis,
     eval_gaussian_potential,
     eval_polynomial,
@@ -116,8 +121,8 @@ def test_squared_gaussian_potential():
         return True
     else:
         print("✗ FAILED: Large discrepancy in reconstruction")
-        print(f"Sample direct values:\n{V_squared_direct[10:15, 10:15]}")
-        print(f"Sample reconstructed values:\n{V_squared_reconstructed[10:15, 10:15]}")
+        print(f"Sample direct values:\\n{V_squared_direct[10:15, 10:15]}")
+        print(f"Sample reconstructed values:\\n{V_squared_reconstructed[10:15, 10:15]}")
         return False
 
 
@@ -153,7 +158,7 @@ def test_gaussian_expectation_values():
     linear_params = jnp.ones(gaussian.shape[0], dtype=dtype_complex)
     gev = calculate_Gaussian_expectation_values(params_init, gaussian, linear_params)
 
-    print("\n" + "=" * 60)
+    print("\\n" + "=" * 60)
     print("TEST: Gaussian expectation values")
     print("=" * 60)
     print("S=", S)
@@ -184,12 +189,12 @@ def test_moments():
     S = osc.calculate_S()
     expectations = osc.moments
 
-    print("\n" + "=" * 60)
+    print("" + "=" * 60)
     print("TEST: Moment calculation")
     print("=" * 60)
     print("Parameters:")
     print(params_init)
-    print("\nFirst moment (x expectation):")
+    print("First moment (x expectation):")
     print(expectations[:, :, 1, 1])
     print("✓ Test completed (visual inspection required)")
 
@@ -245,12 +250,15 @@ def test_polynomial_gaussian_cross_terms_quadrature():
         xs=xs,
         ys=ys,
     )
-    print("Numeric cross terms:\n", numeric_cross)
-    print("Analytic cross terms:\n", np.array(analytic_cross))
+    print("Numeric cross terms:")
+    print(numeric_cross)
+    print("Analytic cross terms:")
+    print(np.array(analytic_cross))
     max_err = np.max(np.abs(numeric_cross - np.array(analytic_cross)))
     rel_err = max_err / (np.max(np.abs(numeric_cross)) + 1e-14)
 
-    print("\n" + "=" * 60)
+    print("" + "=" * 60)
+
     print("TEST: polynomial–Gaussian cross terms (quadrature vs analytic)")
     print("=" * 60)
     print(f"Max abs error: {max_err:.3e}")
@@ -298,7 +306,8 @@ def test_gaussian_kinetic_cross_terms_quadrature():
     max_err = np.max(np.abs(numeric - np.array(analytic)))
     rel_err = max_err / (np.max(np.abs(numeric)) + 1e-14)
 
-    print("\n" + "=" * 60)
+    print("" + "=" * 60)
+
     print("TEST: Gaussian–kinetic cross term (quadrature vs analytic)")
     print("=" * 60)
     print(f"Max abs error: {max_err:.3e}")

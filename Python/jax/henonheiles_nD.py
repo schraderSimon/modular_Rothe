@@ -6,9 +6,9 @@ os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_
 import numpy as np
 
 import jax.numpy as jnp
-from general_wf import generalPotentialSolver
-from jax_Rothe import RotheSolver, save_rothe_state, setUpRotheErrorAndGradient_jit
-from read_string import read_string
+from libraries.general_wf import generalPotentialSolver
+from libraries.jax_Rothe import RotheSolver, save_rothe_state, setUpRotheErrorAndGradient_jit
+from libraries.read_string import read_string
 
 splitting_type = sys.argv[1] if len(sys.argv) > 1 else "none"
 # Henon-Heiles potential

@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^python3 -c \"\nm = 80  # potential Gaussians\nn = 30  # wavefunction Gaussians\nn_concat = 2 \\* n  # old \\+ new\nD = 3\n\nsq_terms = m \\* \\(m \\+ 1\\) // 2\nprint\\(f'Potential Gaussians: \\{m\\}'\\)\nprint\\(f'Squared potential terms: \\{sq_terms\\}'\\)\nprint\\(f'Wavefunction Gaussians: \\{n\\} \\(concat: \\{n_concat\\}\\)'\\)\n\n# Memory for autodiff through fori_loop with sq_terms iterations\n# Each iteration stores intermediates of shape \\(n_concat, n_concat, D\\)\nbytes_per_intermediate = n_concat \\* n_concat \\* D \\* 16  # complex128 = 16 bytes\ntotal_bytes = sq_terms \\* bytes_per_intermediate\nprint\\(f'\\\\\\\\nEstimated autodiff memory: \\{total_bytes / 1e9:\\.2f\\} GB'\\)\n\n# Compare with n=31 potential\nm_old = 31\nsq_terms_old = m_old \\* \\(m_old \\+ 1\\) // 2\nn_old = 25\nn_concat_old = 2 \\* n_old\ntotal_bytes_old = sq_terms_old \\* n_concat_old \\* n_concat_old \\* D \\* 16\nprint\\(f'\\\\\\\\nCompare with original \\(m=\\{m_old\\}, n=\\{n_old\\}\\):'\\)\nprint\\(f'  Squared terms: \\{sq_terms_old\\}'\\)\nprint\\(f'  Estimated memory: \\{total_bytes_old / 1e9:\\.2f\\} GB'\\)\nprint\\(f'  Ratio: \\{total_bytes / total_bytes_old:\\.1f\\}x'\\)\n\"\n$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
