@@ -1,15 +1,24 @@
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
 import jax
 import jax.numpy as jnp
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from libraries.general_wf import generalPotentialSolver
 from libraries.utils import calculate_variance
 
 # Build the hydrogen potential string from stored Gaussian fit coefficients
 # The linear coefficients are negated to represent the attractive Coulomb tail.
-df = pd.read_csv("gaussian_Coulomb/coeffs_mu=100_N=21.csv")
+parent_dir = Path(__file__).parent.parent
+csv_path = parent_dir / "gaussian_Coulomb" / "coeffs_mu=100_N=21.csv"
+df = pd.read_csv(csv_path)
 lincoeffs = df["linear"]
 widths = df["nonlinear"]
 
@@ -103,7 +112,12 @@ def make_variance_objective(n: int):
 
 
 def make_logspace_energy_objective(n: int):
-    """Create energy objective over (minval, maxval) parameters for log-spaced widths."""
+    """Create energy objective over (minval, maxval) parameters for log-spaced widths.
+
+    Note: Cannot use JIT because compute_orthogonalized_matrices calls generalPotentialSolver
+    which has conditional logic that can't be traced. However, gradients are still computed
+    efficiently by JAX's autodiff.
+    """
 
     def energy_from_bounds(bounds):
         minval, maxval = bounds
@@ -112,11 +126,22 @@ def make_logspace_energy_objective(n: int):
         energy, _ = compute_ground_state(H_orth)
         return energy
 
-    return jax.jit(jax.value_and_grad(energy_from_bounds))
+    def value_and_grad_func(bounds):
+        val = energy_from_bounds(bounds)
+        grad = jax.grad(energy_from_bounds)(bounds)
+        return float(val), np.asarray(grad)
+
+    return value_and_grad_func
 
 
 def make_logspace_variance_objective(n: int):
-    """Create variance objective over (minval, maxval) parameters for log-spaced widths."""
+    """Create variance objective over (minval, maxval) parameters for log-spaced widths.
+
+    Note: We use a wrapper that computes the objective without JIT since
+    compute_orthogonalized_matrices calls generalPotentialSolver which has
+    conditional logic that can't be traced. However, gradients are still computed
+    efficiently by JAX's autodiff.
+    """
 
     def variance_from_bounds(bounds):
         minval, maxval = bounds
@@ -129,7 +154,19 @@ def make_logspace_variance_objective(n: int):
     def log_variance_from_bounds(bounds):
         return jnp.log(variance_from_bounds(bounds))
 
-    return jax.jit(jax.value_and_grad(log_variance_from_bounds))
+    # Use pure_callback to allow general_potential_solver's non-traceable code
+    def wrapped_objective(bounds_arr):
+        """Objective that can be differentiated."""
+        bounds = jnp.asarray(bounds_arr)
+        # Call the objective directly (no JIT needed since generalPotentialSolver can't be traced)
+        return log_variance_from_bounds(bounds)
+
+    def value_and_grad_func(bounds):
+        val = wrapped_objective(bounds)
+        grad = jax.grad(wrapped_objective)(bounds)
+        return float(val), np.asarray(grad)
+
+    return value_and_grad_func
 
 
 # =============================================================================

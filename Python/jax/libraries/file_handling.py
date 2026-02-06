@@ -3,6 +3,18 @@ import time
 
 import h5py
 import numpy as np
+from attr import dataclass
+
+
+@dataclass
+class OutputConfig:
+    """Configuration for saving solver output."""
+
+    name: str = None
+    polynomial_string: str = None
+    out_dir: str = "./wave_function_data"
+    compression: str = "gzip"
+    compression_opts: int = 4
 
 
 def save_rothe_state(
@@ -222,11 +234,13 @@ def _select_and_trim_to_time(filename, t_target):
 
         if t_target is None:
             idx_keep = t_arr.size - 1  # resume at last available
+            params_prev = ds_p[idx_keep - 1, ...] if idx_keep >= 1 else None
             return dict(
                 t=t_arr[idx_keep],
                 idx=int(idx_keep),
                 params=ds_p[idx_keep, ...],
                 coeffs=ds_c[idx_keep, ...],
+                params_prev=params_prev,
                 trimmed=False,
             )
 
@@ -271,10 +285,12 @@ def _select_and_trim_to_time(filename, t_target):
             )
 
         idx = keep_len - 1
+        params_prev = ds_p[idx - 1, ...] if idx >= 1 else None
         return dict(
             t=ds_t[idx],
             idx=int(idx),
             params=ds_p[idx, ...],
             coeffs=ds_c[idx, ...],
+            params_prev=params_prev,
             trimmed=trimmed,
         )

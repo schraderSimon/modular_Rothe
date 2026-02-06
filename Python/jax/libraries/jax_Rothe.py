@@ -22,7 +22,7 @@ jax.config.update("jax_enable_x64", True)
 
 from jax.scipy.linalg import solve
 
-from .file_handling import _select_and_trim_to_time, save_rothe_state
+from .file_handling import OutputConfig, _select_and_trim_to_time, save_rothe_state
 from .general_wf import generalPotentialSolver, propagate_kinetic_analytical
 
 # Import optimization helpers
@@ -37,8 +37,8 @@ from .optimization_helpers import (
     y_flat_to_params_flat,
 )
 
-# Re-export save_rothe_state for backward compatibility
-__all__ = ["RotheSolver", "setUpRotheErrorAndGradient_jit", "save_rothe_state"]
+# Re-export OutputConfig and save_rothe_state for backward compatibility
+__all__ = ["RotheSolver", "setUpRotheErrorAndGradient_jit", "save_rothe_state", "OutputConfig"]
 
 
 class RotheSolver:
@@ -67,12 +67,9 @@ class RotheSolver:
         rothe_grad_jax,
         rothe_nograd=None,
         splitting_type="none",
-        name=None,
-        polynomial_string=None,
-        out_dir="./wave_function_data",
-        compression="gzip",
-        compression_opts=4,
+        output_config=None,
     ):
+        # Core solver state
         self.SHH2 = SHH2
         self.dt = dt
         self.t = t
@@ -83,12 +80,16 @@ class RotheSolver:
         self.splitting_type = splitting_type
         self.total_time = 0
         self.params_oldold = None
-        self.params_oldoldold = None
-        self.name = name
-        self.polynomial_string = polynomial_string
-        self.out_dir = out_dir
-        self.compression = compression
-        self.compression_opts = compression_opts
+
+        # Output configuration
+        if output_config is None:
+            output_config = OutputConfig()
+        self.output_config = output_config
+        self.name = output_config.name
+        self.polynomial_string = output_config.polynomial_string
+        self.out_dir = output_config.out_dir
+        self.compression = output_config.compression
+        self.compression_opts = output_config.compression_opts
 
     def find_next_timestep_solution(self, params_init=None, maxiter=100):
         # 1) Choose initial p and store shape
@@ -156,10 +157,10 @@ class RotheSolver:
             t=self.t,
             hess_inv_default=hess_inv_default,
         )
-        hess_inv0 = np.zeros_like(hess_inv0)
-        print("Gradient norm is: %.3e" % grad_theta0_norm)
-        for i in range(len(hess_inv0)):
-            hess_inv0[i, i] = 1.0 / grad_theta0_norm
+        # hess_inv0 = np.zeros_like(hess_inv0)
+        # print("Gradient norm is: %.3e" % grad_theta0_norm)
+        # for i in range(len(hess_inv0)):
+        #    hess_inv0[i, i] = 1.0 / grad_theta0_norm
         if maxiter == 0:
             niter = -1
             theta_solved = theta0
@@ -195,46 +196,6 @@ class RotheSolver:
         )
         return params_solved, coeffs_new, float(final_RE), niter
 
-    def evaluate_gradient_n_times(self, params_init, coeffs_init, n=100):
-        if params_init is not None:
-            self.params_old = jnp.asarray(params_init)
-        if coeffs_init is not None:
-            self.coeffs_old = jnp.asarray(coeffs_init)
-        if params_init is None:
-            params_init = np.asarray(self.params_old)
-        self.params_init = np.asarray(params_init)
-        self._p_shape = self.params_old.shape
-        self._p_size = int(np.prod(self._p_shape))
-
-        # Jitted “flat” objective+grad: theta_flat -> (val, grad_flat)
-        def rothe_fg_flat(theta_flat, params_old, coeffs_old, t, dt):
-            params_new = theta_flat.reshape(self._p_shape)
-            val, g = self.rothe_error_and_gradient(
-                params_new, params_old, coeffs_old, self.SHH2, t, dt
-            )
-            return val, g.ravel()
-
-        # JIT once; SHH2 is closed over, shapes are static
-        self._rothe_fg_flat = jax.jit(rothe_fg_flat)
-
-        def f_and_g(theta_flat_np):
-            theta_flat = jnp.asarray(theta_flat_np)
-            val, g_flat = self._rothe_fg_flat(
-                theta_flat, self.params_old, self.coeffs_old, self.t, self.dt
-            )
-            # SciPy wants host-side types
-            return float(val), np.asarray(g_flat, dtype=np.float64)
-
-        x0 = self.params_init.ravel()
-        val, g = f_and_g(x0)  # warmup for jax compilation
-        start = time.time()
-        for i in range(n):
-            val, g = f_and_g(x0)
-        end = time.time()
-        time_taken = end - start
-        print(f"Time taken for {n} gradient evaluations: {time_taken:.2f} seconds")
-        return time_taken
-
     def propagate(
         self, num_iterations, params_init=None, coeffs_init=None, maxiter=100, renormalize=True
     ):
@@ -242,7 +203,10 @@ class RotheSolver:
             self.params_old = jnp.asarray(params_init)
         if coeffs_init is not None:
             self.coeffs_old = jnp.asarray(coeffs_init)
-        startguess = self.params_old
+        if self.params_oldold is not None:
+            startguess = 2 * self.params_old - self.params_oldold
+        else:
+            startguess = self.params_old
         D = int(self.params_old.shape[1])
         onesD = jnp.ones(D)
         for i in range(num_iterations):
@@ -366,7 +330,10 @@ class RotheSolver:
         self.params_old = jnp.asarray(sel["params"])
         self.coeffs_old = jnp.asarray(sel["coeffs"])
         self.t = np.asarray(sel["t"]).item()
-        self.params_oldold = None  # reset history across resume
+        if sel["params_prev"] is not None:
+            self.params_oldold = jnp.asarray(sel["params_prev"])
+        else:
+            self.params_oldold = None
         return sel  # contains t, idx, trimmed flag
 
 

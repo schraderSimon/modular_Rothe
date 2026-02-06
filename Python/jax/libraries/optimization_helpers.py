@@ -134,7 +134,7 @@ def compute_gtol(initial_err):
     """
     Stopping criterion for BFGS.
     """
-    return max(initial_err / 10.0, 1e-8)
+    return max(initial_err / 10.0, 1e-10)
 
 
 def make_initial_hessian_y(dim_y, grad_y0_norm):
