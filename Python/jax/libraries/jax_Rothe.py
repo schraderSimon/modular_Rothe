@@ -352,9 +352,17 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         dtc = jnp.conj(dt)
         dt_abs_sq_4 = dt * dtc / 4
 
-        A_dagger_A = S_full + dt_abs_sq_4 * H2_full + 0.5j * (dt - dtc) * H_full
+        A_dagger_A = (
+            S_full[ngo:, ngo:]
+            + dt_abs_sq_4 * H2_full[ngo:, ngo:]
+            + 0.5j * (dt - dtc) * H_full[ngo:, ngo:]
+        )
 
-        B_dagger_B = S_full + dt_abs_sq_4 * H2_full - 0.5j * (dt - dtc) * H_full
+        B_dagger_B = (
+            S_full[:ngo, :ngo]
+            + dt_abs_sq_4 * H2_full[:ngo, :ngo]
+            - 0.5j * (dt - dtc) * H_full[:ngo, :ngo]
+        )
 
         rho_mat = (
             S_full[:ngo, ngo:]
@@ -363,10 +371,10 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         )
         rho_vec = jnp.conj(rho_mat).T @ coeffs_old
         S_reg = A_dagger_A + jnp.eye(A_dagger_A.shape[0]) * lambda_
-        coeffs_new = solve(S_reg[ngo:, ngo:], rho_vec)
+        coeffs_new = solve(S_reg, rho_vec)
 
-        overlap_term = jnp.conj(coeffs_old) @ B_dagger_B[:ngo, :ngo] @ coeffs_old
-        projection_term = jnp.conj(rho_vec).T @ solve(S_reg[ngo:, ngo:], rho_vec)
+        overlap_term = jnp.conj(coeffs_old) @ B_dagger_B @ coeffs_old
+        projection_term = jnp.conj(rho_vec).T @ coeffs_new
         rothe_error = jnp.real(overlap_term - projection_term)
         if return_cnew:
             return rothe_error, coeffs_new

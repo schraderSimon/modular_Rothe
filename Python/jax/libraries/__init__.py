@@ -9,16 +9,15 @@ Rothe time-stepping method for solving the time-dependent Schrödinger equation.
 # This avoids issues with missing functions or circular imports
 
 __all__ = [
-    'general_wf',
-    'jax_Rothe', 
-    'gaussian_potential_helpers',
-    'gaussian_potential_vjp_fast',
-    'file_handling',
-    'optimization_helpers',
-    'helpers',
-    'polynomial_kinetic_vjp',
-    'quadrature_utils',
-    'read_string',
-    'utils',
-    'calculate_Hessian_coefficients',
+    "general_wf",
+    "jax_Rothe",
+    "gaussian_potential_helpers",
+    "file_handling",
+    "optimization_helpers",
+    "helpers",
+    "polynomial_kinetic_vjp",
+    "quadrature_utils",
+    "read_string",
+    "utils",
+    "calculate_Hessian_coefficients",
 ]

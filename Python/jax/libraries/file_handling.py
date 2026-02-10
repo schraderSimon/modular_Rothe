@@ -10,8 +10,8 @@ from attr import dataclass
 class OutputConfig:
     """Configuration for saving solver output."""
 
-    name: str = None
-    polynomial_string: str = None
+    name: None | str = None
+    polynomial_string: None | str = None
     out_dir: str = "./wave_function_data"
     compression: str = "gzip"
     compression_opts: int = 4

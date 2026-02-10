@@ -166,6 +166,7 @@ def resume_or_initialize_rothe(
     initial_error=0.0,
     params=None,
     coeffs=None,
+    t_start=None,
 ):
     """
     Resume Rothe solver from checkpoint or initialize from scratch.
@@ -180,6 +181,7 @@ def resume_or_initialize_rothe(
     - initial_error: initial error value (default 0.0)
     - params: initial parameters
     - coeffs: initial coefficients
+    - t_start: if given, resume from this time (or the latest checkpoint <= t_start)
 
     Returns:
     - nsteps_remaining: number of steps left to propagate
@@ -187,7 +189,7 @@ def resume_or_initialize_rothe(
     from libraries.file_handling import save_rothe_state
 
     try:
-        info = rothesolver.resume_from_file(t_start=None)
+        info = rothesolver.resume_from_file(t_start=t_start)
         print(f"Resumed at t={info['t']} (step {info['idx']}), trimmed={info['trimmed']}")
         return nsteps_total - info["idx"]
     except FileNotFoundError:

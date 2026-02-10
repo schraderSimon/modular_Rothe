@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "rothe"
+version = "0.1.0"
+description = "Gaussian-basis Rothe time-stepping for the time-dependent Schrödinger equation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jax[cuda12]",
+    "jaxlib",
+    "numpy",
+    "scipy",
+    "h5py",
+    "attrs",
+    "pandas",
+    "sympy",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+plot = ["matplotlib"]
+
+[project.scripts]
+propagate-hydrogen = "scripts.propagate_hydrogen:main"
+propagate-henon-heiles = "scripts.propagate_henon_heiles:main"
+
+[tool.setuptools.packages.find]
+include = ["rothe*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

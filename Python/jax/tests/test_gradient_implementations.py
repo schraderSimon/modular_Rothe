@@ -19,7 +19,7 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from libraries.gaussian_potential_vjp_fast import (
+from libraries.gaussian_potential_helpers import (
     _calculate_Gaussian_expectation_values_raw,
     calculate_Gaussian_expectation_values_batched,
     calculate_Gaussian_expectation_values_fast,

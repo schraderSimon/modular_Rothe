@@ -150,8 +150,6 @@ def benchmark_vjp_speedup(
     """
     from libraries.gaussian_potential_helpers import (
         calculate_Gaussian_expectation_values,
-    )
-    from libraries.gaussian_potential_vjp_fast import (
         calculate_Gaussian_expectation_values_batched,
         calculate_Gaussian_expectation_values_fast,
         compute_batch_size,

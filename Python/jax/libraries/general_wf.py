@@ -23,13 +23,13 @@ import jax.numpy as jnp
 from jax import jit
 
 from .gaussian_potential_helpers import (
+    calculate_Gaussian_expectation_values_batched as calculate_Gaussian_expectation_values,
+)
+from .gaussian_potential_helpers import (
     calculate_squared_Gaussian_potential,
     get_exponent_subtraction_terms,
     get_gaussian_pair_terms,
     parse_exponential_params,
-)
-from .gaussian_potential_vjp_fast import (
-    calculate_Gaussian_expectation_values_batched as calculate_Gaussian_expectation_values,
 )
 
 # Memory limit for batched Gaussian potential computation (MB)
@@ -38,8 +38,6 @@ from .read_string import obtain_polynomial_squared, read_string
 
 logpi = jnp.log(jnp.pi)
 log10 = jnp.log(10)
-
-import numpy as np
 
 import jax.lax as lax
 
@@ -106,17 +104,15 @@ class ND_potentials:
     Stored in an array of shape (n, D, 4) as (a, b, mu, p).
     """
 
-    def __init__(self, params, K_max=4, need_moments=True):
+    def __init__(self, params, K_max=4):
         """
         params: (n, D, 4) -> (a, b, mu, p) per dimension
         K_max:  maximum polynomial order to precompute moments for (static under jit)
-        need_moments: if False, skip moment computation (for pure Gaussian potentials)
         """
         self.params = jnp.asarray(params, dtype=dtype_real)
         self.n = self.params.shape[0]
         self.D = self.params.shape[1]
         self.K_MAX = int(K_max)
-        self._need_moments = need_moments
 
         # Unpack per-dimension parameters
         self.a = self.params[:, :, 0]
@@ -124,16 +120,16 @@ class ND_potentials:
         self.mu = self.params[:, :, 2]
         self.p = self.params[:, :, 3]
         self.S = None
-        self.setUpIntermediates(need_moments=need_moments)
+        self.setUpIntermediates()
 
-    def setUpIntermediates(self, need_moments=True):
+    def setUpIntermediates(self):
         # shapes: ai,aj,mu_i,mu_j,p_i,p_j are (n,1,D) / (1,n,D)
-        alpha = self.a**2 + 1j * self.b  # (n,D)
-        ai, aj = alpha.conj()[:, None, :], alpha[None, :, :]  # (n,1,D), (1,n,D)
+        alpha_nD = self.a**2 + 1j * self.b  # (n,D)
+        ai, aj = alpha_nD.conj()[:, None, :], alpha_nD[None, :, :]  # (n,1,D), (1,n,D)
 
         self.Gamma = Gamma = ai + aj  # (n,n,D)
-
-        pi, pj = self.p[:, None, :], self.p[None, :, :]
+        pi = self.p[:, None, :]  # (n,1,D)
+        pj = self.p[None, :, :]  # (1,n,D)
         mui = self.mu[:, None, :] - 1j * pi / (2 * ai)
         muj = self.mu[None, :, :] + 1j * pj / (2 * aj)
 
@@ -144,29 +140,20 @@ class ND_potentials:
         self.tksq = self.tilde_k**2
 
         # Only compute moment-related intermediates if needed (polynomial potentials)
-        if need_moments:
-            self.P = (ai * mui + aj * muj) / Gamma  # (n,n,D)
-            self.R = 1 / (2 * Gamma)  # (n,n,D)
-            self.beta_i = ai / Gamma  # (n,n,D)
-            self.beta_j = aj / Gamma  # (n,n,D)
-            # Precompute moments up to a fixed order so shapes stay static under jit
-            self.moments = self.calculate_all_moments(maximal_order=self.K_MAX)
-        else:
-            self.P = None
-            self.R = None
-            self.beta_i = None
-            self.beta_j = None
-            self.moments = None
+        self.P = (ai * mui + aj * muj) / Gamma  # (n,n,D)
+        self.R = 1 / (2 * Gamma)  # (n,n,D)
+        self.beta_i = ai / Gamma  # (n,n,D)
+        self.beta_j = aj / Gamma  # (n,n,D)
+        # Precompute moments up to a fixed order so shapes stay static under jit
+        self.moments = self.calculate_all_moments(maximal_order=self.K_MAX)
 
-    def update_parameters(self, params, need_moments=None):
+    def update_parameters(self, params):
         self.params = jnp.asarray(params, dtype=dtype_real)
         self.a = self.params[:, :, 0]
         self.b = self.params[:, :, 1]
         self.mu = self.params[:, :, 2]
         self.p = self.params[:, :, 3]
-        if need_moments is None:
-            need_moments = self._need_moments
-        self.setUpIntermediates(need_moments=need_moments)
+        self.setUpIntermediates()
 
     def update_Kmax(self, K_max):
         """Optionally change K_max at runtime (rebuilds cached moments)."""
@@ -175,7 +162,6 @@ class ND_potentials:
 
     def calculate_S(self):
         expo_core = jnp.sum(self.exponent_contrib - self.tysq * self.tilde_k, axis=-1)  # (n,n)
-        # expo_pref = 0.5 * (D * jnp.log(jnp.pi) - jnp.sum(jnp.log(self.Gamma), axis=-1)) # (n,n) #PI ISN'T NEEDED
         expo_pref = -0.5 * jnp.sum(jnp.log(self.Gamma), axis=-1)  # (n,n)
         expo = expo_core + expo_pref  # (n,n)
 
@@ -263,39 +249,6 @@ class ND_potentials:
 
         return jnp.real(dipole)
 
-    def calculate_VT_poly(self, power_string):
-        S = self.S if self.S is not None else self.calculate_S()
-        power = jnp.asarray(power_string, dtype=jnp.int32)  # (D,)
-        moments = self.moments
-
-        k, y = self.tilde_k, self.tilde_y
-        bi, bj = self.beta_i, self.beta_j
-
-        idx = power[None, None, :, None]
-        Mn = jnp.take_along_axis(moments, idx, axis=-1)[..., 0]
-
-        idx1 = jnp.clip(power - 1, 0)[None, None, :, None]
-        Mn1 = jnp.take_along_axis(moments, idx1, axis=-1)[..., 0]
-        Mn1 = jnp.where((power >= 1)[None, None, :], Mn1, 0)
-
-        idx2 = jnp.clip(power - 2, 0)[None, None, :, None]
-        Mn2 = jnp.take_along_axis(moments, idx2, axis=-1)[..., 0]
-        Mn2 = jnp.where((power >= 2)[None, None, :], Mn2, 0)
-
-        Mprod = jnp.prod(Mn, axis=-1)  # (n,n)
-
-        inv_Mn = jnp.where(jnp.abs(Mn) > 0, 1.0 / Mn, 0.0)
-        r1 = Mn1 * inv_Mn
-        r2 = Mn2 * inv_Mn
-
-        nvec = power.astype(Mn.real.dtype)[None, None, :]
-
-        base = -(2 * (k**2) * (y**2) - k)
-        vt_coeff = base - 2 * nvec * k * y * bj * r1 - 0.5 * nvec * (nvec - 1) * (bj**2) * r2
-
-        VT = S * (Mprod * jnp.sum(vt_coeff, axis=-1))
-        return VT
-
     def calculate_H(self, t):
         raise NotImplementedError
 
@@ -323,22 +276,11 @@ class ND_potentials:
             H2 = self.calculate_V2(t)
         return S, H, H2
 
-    def calculate_TV_poly(self, power_string):
-        """
-        Exact relation: (VT)† = TV  ⇒  TV = VT.conj().T
-        """
-        VT = self.calculate_VT_poly(power_string)
-        return VT.conj().T
-
     def calculate_V(self, t):
         raise NotImplementedError
 
     def calculate_V2(self, t):
         raise NotImplementedError
-
-    def set_up_hessian(self):
-        moments = self.moments
-        overlap = self.S if self.S is not None else self.calculate_S()
 
 
 def update_polynomial_values(polynomial, t):
@@ -404,8 +346,7 @@ class generalPotentialSolver(ND_potentials):
             for key, val in polynomial_squared.items():
                 K_max = max(K_max, max(key))
         # Only compute moments if we have polynomial terms
-        need_moments = self.polynomial is not None
-        super().__init__(params, K_max=K_max, need_moments=need_moments)
+        super().__init__(params, K_max=K_max)
         if self.polynomial is not None:
             self._build_cached_indices()
 
@@ -420,21 +361,36 @@ class generalPotentialSolver(ND_potentials):
         self._poly2_vals = jnp.array(list(poly2.values()))
 
     def _build_cached_indices(self):
-        D, Kp1 = self.D, self.moments.shape[-1]
+        """Precompute moment-lookup indices for each monomial in the polynomial.
 
-        def _mk(keys):
-            # keys: (M,D)
-            dm = jnp.swapaxes(keys, 0, 1)  # (D,M)
-            idx = jnp.clip(dm, 0, Kp1 - 1)  # (D,M)
-            idx1 = jnp.clip(dm - 1, 0, Kp1 - 1)
-            idx2 = jnp.clip(dm - 2, 0, Kp1 - 1)
-            return dm, idx, idx1, idx2
+        For a polynomial V = sum_m c_m * prod_d x_d^{n_{m,d}}, we need to look up
+        moments M_{n_d}, M_{n_d-1}, M_{n_d-2} from self.moments (shape n,n,D,K+1).
 
-        (self._dm, self._idx, self._idx1, self._idx2) = _mk(self._poly_keys)
-        (self._dm2, self._i2, self._i2_1, self._i2_2) = _mk(self._poly2_keys)
+        This builds clipped index arrays (shape D,num_monomials) so that
+        jnp.take_along_axis can gather the right moments without Python loops.
+        """
+        max_moment_order = self.moments.shape[-1] - 1  # K_MAX
 
-    def setUpIntermediates(self, need_moments=True):
-        super().setUpIntermediates(need_moments=need_moments)
+        def _make_moment_indices(keys_MD):
+            # keys_MD: (num_monomials, D) — power of each dimension per monomial
+            powers_DM = jnp.swapaxes(keys_MD, 0, 1)  # (D, num_monomials)
+            idx_n_DM = jnp.clip(powers_DM, 0, max_moment_order)
+            idx_n1_DM = jnp.clip(powers_DM - 1, 0, max_moment_order)  # for M_{n-1}
+            idx_n2_DM = jnp.clip(powers_DM - 2, 0, max_moment_order)  # for M_{n-2}
+            return powers_DM, idx_n_DM, idx_n1_DM, idx_n2_DM
+
+        # Indices for the polynomial itself (used in V, VT+TV)
+        (
+            self._powers_DM,
+            self._moment_idx_DM,
+            self._moment_idx_n1_DM,
+            self._moment_idx_n2_DM,
+        ) = _make_moment_indices(self._poly_keys)
+        # Indices for the squared polynomial (used in V^2)
+        _, self._moment2_idx_DM, _, _ = _make_moment_indices(self._poly2_keys)
+
+    def setUpIntermediates(self):
+        super().setUpIntermediates()
         if self.polynomial is not None:
             self._build_cached_indices()
 
@@ -443,7 +399,7 @@ class generalPotentialSolver(ND_potentials):
             return jnp.zeros_like(S)
         self._update_poly_coefficients(t)
         M = self._poly_vals.shape[0]
-        idx = jnp.broadcast_to(self._idx, self.moments.shape[:-1] + (M,))
+        idx = jnp.broadcast_to(self._moment_idx_DM, self.moments.shape[:-1] + (M,))
         Mn = jnp.take_along_axis(self.moments, idx, axis=-1)  # (n,n,D,M)
         Mprod = jnp.prod(Mn, axis=2)  # (n,n,M)
         return jnp.einsum("ijm,m->ij", S[..., None] * Mprod, self._poly_vals)
@@ -481,7 +437,7 @@ class generalPotentialSolver(ND_potentials):
             return jnp.zeros_like(S)
         self._update_poly_coefficients(t)
         M2 = self._poly2_vals.shape[0]
-        idx = jnp.broadcast_to(self._i2, self.moments.shape[:-1] + (M2,))
+        idx = jnp.broadcast_to(self._moment2_idx_DM, self.moments.shape[:-1] + (M2,))
         Mn = jnp.take_along_axis(self.moments, idx, axis=-1)
         Mprod = jnp.prod(Mn, axis=2)
         return jnp.einsum("ijm,m->ij", S[..., None] * Mprod, self._poly2_vals)
@@ -502,7 +458,7 @@ class generalPotentialSolver(ND_potentials):
         aK, bK, muK, pK = self.exponential_params.transpose(2, 0, 1)  # (m, D)
         alphaK = aK**2 + 1j * bK  # (m, D)
 
-        dm = self._dm  # (D, M)
+        dm = self._powers_DM  # (D, num_monomials)
         poly_vals = self._poly_vals
         max_order = self.K_MAX
 
@@ -564,41 +520,76 @@ class generalPotentialSolver(ND_potentials):
         polynomial_gaussian_cross = self.calculate_polynomial_gaussian_cross_terms(S, t=t)
         return polynomial_V2 + gaussian_V2 + polynomial_gaussian_cross
 
-    def calculate_polynomial_kinetic_cross_terms(self, S, t=0) -> jnp.ndarray:
+    def calculate_polynomial_kinetic_cross_terms(self, S_nn, t=0) -> jnp.ndarray:
+        """Compute <g_i| (VT + TV) |g_j> for polynomial V, summed over monomials.
+
+        For each monomial x^n = x_1^{n_1} ... x_D^{n_D} with coefficient c_m,
+        the VT matrix element decomposes per dimension d as:
+
+            (VT)_d = kinetic_base_d
+                   - 2 n_d  k y beta_j  (M_{n_d-1} / M_{n_d})
+                   - n_d(n_d-1)/2 beta_j^2  (M_{n_d-2} / M_{n_d})
+
+        where kinetic_base_d = -(2 k^2 y^2 - k) is the pure-kinetic part,
+        k = tilde_k, y = tilde_y, beta_j = alpha_j / Gamma, and M_n are the
+        Hermite moments of the overlap Gaussian.
+
+        The full VT element is then:
+            VT_{ij} = S_{ij} * sum_m c_m * prod_d M_{n_d} * sum_d (VT)_d
+        and we return VT + VT^dagger (since TV = VT^dagger for real V).
+        """
         if self.polynomial is None:
-            return jnp.zeros_like(S, dtype=dtype_complex)
+            return jnp.zeros_like(S_nn, dtype=dtype_complex)
         self._update_poly_coefficients(t)
-        k, y, bj = self.tilde_k, self.tilde_y, self.beta_j
 
-        M = self._poly_vals.shape[0]
-        idx = jnp.broadcast_to(self._idx, self.moments.shape[:-1] + (M,))
-        idx1 = jnp.broadcast_to(self._idx1, self.moments.shape[:-1] + (M,))
-        idx2 = jnp.broadcast_to(self._idx2, self.moments.shape[:-1] + (M,))
+        # --- Gather overlap intermediates (all shape n,n,D) ---
+        k_nnD = self.tilde_k  # alpha_i * alpha_j / Gamma
+        y_nnD = self.tilde_y  # tilde_mu_i - tilde_mu_j
+        bj_nnD = self.beta_j  # alpha_j / Gamma
 
-        Mn = jnp.take_along_axis(self.moments, idx, axis=-1)  # (n,n,D,M)
-        Mn1 = jnp.take_along_axis(self.moments, idx1, axis=-1)
-        Mn2 = jnp.take_along_axis(self.moments, idx2, axis=-1)
+        # --- Look up moments M_{n_d}, M_{n_d-1}, M_{n_d-2} for each monomial ---
+        M = self._poly_vals.shape[0]  # number of monomials
+        broadcast_shape = self.moments.shape[:-1] + (M,)  # (n, n, D, M)
 
-        # zero the invalid (n<1 / n<2) entries without branches
-        Mn1 = jnp.where(self._dm[None, None, :, :] >= 1, Mn1, 0)
-        Mn2 = jnp.where(self._dm[None, None, :, :] >= 2, Mn2, 0)
+        idx_nnDM = jnp.broadcast_to(self._moment_idx_DM, broadcast_shape)
+        idx1_nnDM = jnp.broadcast_to(self._moment_idx_n1_DM, broadcast_shape)
+        idx2_nnDM = jnp.broadcast_to(self._moment_idx_n2_DM, broadcast_shape)
 
-        # Use safe division: when Mn==0, the ratio r1/r2 is multiplied by nvec or nvec*(nvec-1),
-        # which ensures the term vanishes anyway. We use a safe denominator to avoid NaN gradients.
-        safe_Mn = jnp.where(jnp.abs(Mn) > 0, Mn, 1.0)  # Replace 0 with 1 to avoid div-by-zero
-        inv_Mn = jnp.where(jnp.abs(Mn) > 0, 1.0 / safe_Mn, 0.0)
-        r1, r2 = Mn1 * inv_Mn, Mn2 * inv_Mn
-        nvec = self._dm.astype(Mn.real.dtype)[None, None, :, :]
+        Mn_nnDM = jnp.take_along_axis(self.moments, idx_nnDM, axis=-1)  # M_{n_d}
+        Mn1_nnDM = jnp.take_along_axis(self.moments, idx1_nnDM, axis=-1)  # M_{n_d - 1}
+        Mn2_nnDM = jnp.take_along_axis(self.moments, idx2_nnDM, axis=-1)  # M_{n_d - 2}
 
-        base = -(2 * (k**2) * (y**2) - k)[..., None]  # (n,n,D,1)
-        vt_coeff = (
-            base
-            - 2 * nvec * k[..., None] * y[..., None] * bj[..., None] * r1
-            - 0.5 * nvec * (nvec - 1) * (bj[..., None] ** 2) * r2
-        )
-        term = S[..., None] * (jnp.prod(Mn, axis=2) * jnp.sum(vt_coeff, axis=2))  # (n,n,M)
-        VT = jnp.einsum("ijm,m->ij", term, self._poly_vals)
-        return VT + VT.conj().T
+        # Zero out moments for orders below the derivative requirement
+        nvec_DM = self._powers_DM  # (D, num_monomials) integer power per dim
+        Mn1_nnDM = jnp.where(nvec_DM[None, None, :, :] >= 1, Mn1_nnDM, 0)
+        Mn2_nnDM = jnp.where(nvec_DM[None, None, :, :] >= 2, Mn2_nnDM, 0)
+
+        # --- Safe ratios M_{n-1}/M_n and M_{n-2}/M_n ---
+        # When M_n == 0 the ratio is irrelevant (multiplied by n_d or n_d*(n_d-1)),
+        # so we replace 0 with 1 in the denominator to avoid NaN gradients.
+        safe_Mn_nnDM = jnp.where(jnp.abs(Mn_nnDM) > 0, Mn_nnDM, 1.0)
+        inv_Mn_nnDM = jnp.where(jnp.abs(Mn_nnDM) > 0, 1.0 / safe_Mn_nnDM, 0.0)
+        r1_nnDM = Mn1_nnDM * inv_Mn_nnDM  # M_{n-1} / M_n
+        r2_nnDM = Mn2_nnDM * inv_Mn_nnDM  # M_{n-2} / M_n
+
+        # --- Per-dimension VT coefficients (n,n,D,M) ---
+        nvec_nnDM = nvec_DM.astype(Mn_nnDM.real.dtype)[None, None, :, :]
+        k_nnD1 = k_nnD[..., None]
+        y_nnD1 = y_nnD[..., None]
+        bj_nnD1 = bj_nnD[..., None]
+
+        kinetic_base_nnD1 = -(2 * k_nnD1**2 * y_nnD1**2 - k_nnD1)
+        first_deriv_nnDM = -2 * nvec_nnDM * k_nnD1 * y_nnD1 * bj_nnD1 * r1_nnDM
+        second_deriv_nnDM = -0.5 * nvec_nnDM * (nvec_nnDM - 1) * bj_nnD1**2 * r2_nnDM
+        vt_coeff_nnDM = kinetic_base_nnD1 + first_deriv_nnDM + second_deriv_nnDM
+
+        # --- Contract: prod over D, sum over D, then weight by polynomial coefficients ---
+        monomial_prod_nnM = jnp.prod(Mn_nnDM, axis=2)  # prod_d M_{n_d}
+        dim_sum_nnM = jnp.sum(vt_coeff_nnDM, axis=2)  # sum_d (VT)_d
+        weighted_nnM = S_nn[..., None] * monomial_prod_nnM * dim_sum_nnM
+
+        VT_nn = jnp.einsum("ijm,m->ij", weighted_nnM, self._poly_vals)
+        return VT_nn + VT_nn.conj().T
 
     def calculate_gaussian_kinetic_cross_terms(self, S, t=0) -> jnp.ndarray:
         """Compute VT for Gaussian potentials (real V), return VT+VT†.

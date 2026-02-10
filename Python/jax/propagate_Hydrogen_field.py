@@ -27,6 +27,12 @@ def parse_args():
     parser.add_argument("--dt", type=complex, help="time step", default=0.2)
     parser.add_argument("--rothe_epsilon", type=float, default=0.5)
     parser.add_argument("--maxiter", type=int, default=50)
+    parser.add_argument(
+        "--t_start",
+        type=float,
+        default=None,
+        help="Time to resume propagation from (resumes from checkpoint at or before this time)",
+    )
     return parser.parse_args()
 
 
@@ -37,6 +43,7 @@ ngwf = num_gauss_wavefunction = args.num_gauss_wavefunction
 rothe_epsilon = args.rothe_epsilon  # Unused right now
 maxiter = args.maxiter  # Unused right now
 dt = args.dt
+t_start = args.t_start
 external_field_params = ExternalFieldParams()  # Standard parameters
 string_name = set_up_hydrogen_string_name(external_field_params, ngp, ngwf, dt)
 tfinal = external_field_params.t_final
@@ -99,6 +106,7 @@ nsteps = resume_or_initialize_rothe(
     initial_error=0,
     params=params_init,
     coeffs=initial_linear_coeffs,
+    t_start=t_start,
 )
 
 rothesolver.propagate(nsteps, maxiter=maxiter)
