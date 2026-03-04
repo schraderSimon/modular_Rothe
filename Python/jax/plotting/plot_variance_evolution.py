@@ -21,18 +21,7 @@ from initial_state_calculations.groundstate_from_imaginary_data import (
     parse_simulation_name,
 )
 
-COLORS = [
-    "blue",
-    "red",
-    "green",
-    "orange",
-    "purple",
-    "brown",
-    "pink",
-    "gray",
-    "olive",
-    "cyan",
-]
+COLORS = ["blue", "red", "green", "orange", "purple", "brown", "pink", "gray", "olive", "cyan"]
 
 
 def main():
@@ -61,9 +50,7 @@ def main():
         print("Nothing to plot (cache is empty).")
         return
 
-    fig, axes = plt.subplots(
-        1, n_panels, figsize=(n_panels * 7, 8), sharex=True, squeeze=False
-    )
+    fig, axes = plt.subplots(1, n_panels, figsize=(n_panels * 7, 8), sharex=True, squeeze=False)
     axes = axes[0]  # squeeze=False gives 2-D array
 
     for ax, n_wf in zip(axes, sorted_n_wf):
@@ -87,11 +74,7 @@ def main():
         ax.set_xlim(0, 80)
         ax.set_xlabel("Imaginary time (−Im(t))", fontsize=12)
 
-    plt.suptitle(
-        "Energy Variance in Imaginary Time\n(Hydrogen Ground State)",
-        fontsize=14,
-        y=0.98,
-    )
+    plt.suptitle("Energy Variance in Imaginary Time\n(Hydrogen Ground State)", fontsize=14, y=0.98)
     plt.tight_layout()
 
     figures_dir = Path(__file__).parent.parent / "figures"

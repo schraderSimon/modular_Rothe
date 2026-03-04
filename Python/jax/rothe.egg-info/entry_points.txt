@@ -1,0 +1,3 @@
+[console_scripts]
+propagate-henon-heiles = scripts.propagate_henon_heiles:main
+propagate-hydrogen = scripts.propagate_hydrogen:main

@@ -1,0 +1,107 @@
+Metadata-Version: 2.4
+Name: rothe
+Version: 0.1.0
+Summary: Gaussian-basis Rothe time-stepping for the time-dependent Schrödinger equation
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: jax[cuda12]
+Requires-Dist: jaxlib
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: h5py
+Requires-Dist: attrs
+Requires-Dist: pandas
+Requires-Dist: sympy
+Provides-Extra: test
+Requires-Dist: pytest>=7; extra == "test"
+Provides-Extra: plot
+Requires-Dist: matplotlib; extra == "plot"
+
+# modular_Rothe (JAX)
+
+This folder contains a JAX + SciPy implementation of a **Gaussian-basis Rothe time-stepping method** for the time-dependent Schrödinger equation (TDSE).
+
+At a high level:
+- The wavefunction is represented in a (generally non-orthogonal) Gaussian basis.
+- Given basis parameters `p` and coefficients `c` at time `t`, the Rothe step solves an implicit condition for the next basis parameters `p_new` and coefficients `c_new` at `t+dt`.
+- Results are optionally written incrementally to a single HDF5 file per run.
+
+## What it can do
+
+- Build overlap and Hamiltonian matrices for Gaussian bases in 1D (`HOscillator_1d.py`) and in ND for **polynomial potentials** specified by a string (`general_wf.py`).
+- Advance a TDSE solution via the Rothe method (`jax_Rothe.py`) using SciPy BFGS and JAX gradients.
+- Optionally use a simple splitting mode (`splitting_type="kinetic"`) that applies an **analytic kinetic half-step** (`propagate_kinetic_analytical`) and treats the remaining implicit solve as potential-only.
+- Persist and resume simulations using HDF5 append-only logs (`file_handling.py`).
+
+## What it cannot (currently) do
+
+- No packaged CLI/API: entrypoints are the scripts `henonHeiles_2D.py` / `henonheiles_nD.py` (and the demo in `general_wf.py`).
+- No robust test suite runner: `test_HOscillator_1D.py` is a lightweight self-check script (works as `python test_HOscillator_1D.py`).
+- The “dense metric / approximate Hessian scaling” path in `jax_Rothe.py` is marked **TEMPORARY** (`hessian_cholesky` returns identity), so it does not currently provide real preconditioning.
+- No explicit units/physical constants: interpretation of parameters and polynomial coefficients is up to the caller.
+
+## Files (mental map)
+
+- `jax_Rothe.py`
+  - `RotheSolver`: main time stepper (implicit step solved by SciPy BFGS)
+  - `setUpRotheErrorAndGradient_jit`: builds the Rothe objective and JAX gradient
+- `general_wf.py`
+  - `ND_potentials`: Gaussian-basis intermediates + moment cache
+  - `generalPotentialSolver`: polynomial potential model from a string DSL
+  - `propagate_kinetic_analytical`: exact free-particle propagation for a Gaussian basis
+- `file_handling.py`
+  - `save_rothe_state`: append time step data to HDF5
+  - `load_rothe_file`: read HDF5 into numpy arrays
+  - `_select_and_trim_to_time`: resume/truncate helper
+- `henonHeiles_2D.py`, `henonheiles_nD.py`
+  - Example runners for polynomial potentials (Henon–Heiles-like examples)
+- `HOscillator_1d.py`
+  - 1D harmonic oscillator overlap/H/H^2 builders + ground state helpers
+- `read_string.py`
+  - Parses the polynomial DSL into a mapping `{multi_index_tuple: coefficient}`
+
+## Key data structures
+
+- Gaussian parameters `p`
+  - **ND**: `p.shape == (n, D, 4)` with per-dimension ordering `(a, b, mu, p)`.
+  - **1D**: `params.shape == (n, 4)` with ordering `(a, b, mu, p)`.
+- Coefficients `c`
+  - `c.shape == (n,)` complex.
+
+## HDF5 output format
+
+Saved by `file_handling.save_rothe_state(sim_name, splitting_type, ...)` into:
+
+- File name: `wave_function_data/{sim_name}__{splitting_type}.h5` (unless `out_dir` is changed)
+- Root attributes: `sim_name`, `splitting_type`, `dt`, `created`, `p_dtype`, `c_dtype`
+- Dataset: `polynomial_string` (scalar UTF-8)
+- Group: `data/`
+  - `data/p`: shape `(steps, n, D, 4)`
+  - `data/c`: shape `(steps, n)`
+  - `data/t`: shape `(steps,)`
+  - `data/rothe_error`: shape `(steps,)`
+
+## How to run
+
+These scripts assume you are using a Python environment that already has `jax`, `jaxlib`, `numpy`, `scipy`, and `h5py`.
+
+Run the 1D sanity check:
+
+```bash
+cd /home/simon/projects/modular_Rothe/Python/jax
+python test_HOscillator_1D.py
+```
+
+Run a polynomial-potential example (optional `splitting_type` argument):
+
+```bash
+cd /home/simon/projects/modular_Rothe/Python/jax
+python henonheiles_nD.py none
+# or
+python henonheiles_nD.py kinetic
+```
+
+## Notes / assumptions
+
+- Many modules set `XLA_FLAGS` at import time to enable Triton GEMM and autotuning. If you manage XLA flags elsewhere (module system, job scripts), you may want to remove/centralize those assignments.
+- Because SciPy optimization runs on the host and JAX traces on first use, the first step can include noticeable compilation overhead.

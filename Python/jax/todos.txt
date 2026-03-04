@@ -1,0 +1,3 @@
+5. Add epsilon parameter and ability to add Gaussians.
+ (more precisely: Make it mandatory, but set default epsilon to 1e10 so that NOTHING is ever added)
+6. Check if you can run 6D-HeHe

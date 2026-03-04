@@ -7,7 +7,10 @@ flags anywhere else in the codebase.
 """
 
 import os
+from pathlib import Path
 
+# Project root: directory containing pyproject.toml (one level above rothe/)
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_triton_gemm=true --xla_gpu_autotune_level=4"
 
 import jax  # noqa: E402 (must follow env-var setup)

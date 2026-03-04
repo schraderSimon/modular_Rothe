@@ -1,0 +1,14 @@
+jax[cuda12]
+jaxlib
+numpy
+scipy
+h5py
+attrs
+pandas
+sympy
+
+[plot]
+matplotlib
+
+[test]
+pytest>=7

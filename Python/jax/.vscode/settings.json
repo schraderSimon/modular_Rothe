@@ -4,5 +4,15 @@
             "approve": true,
             "matchCommandLine": true
         }
-    }
+    },
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    },
+    "black-formatter.args": [
+        "--line-length",
+        "120",
+        "--skip-magic-trailing-comma"
+    ],
+    "ruff.lineLength": 120
 }
