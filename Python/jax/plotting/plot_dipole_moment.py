@@ -107,11 +107,18 @@ def main():
             continue
 
         times = data["t"]
-        dipole = data.get("dipole", None)
+        dipole_list = data.get("dipole", None)
 
-        if dipole is None:
+        if dipole_list is None or all(v is None for v in dipole_list):
             print(f"Error: No dipole moment data found in {sim_name!r} — skipping.")
             continue
+
+        # Build array from list, filling None entries with NaN
+        D_dip = next(v.shape[-1] for v in dipole_list if v is not None)
+        dipole = np.full((len(dipole_list), D_dip), np.nan)
+        for i, v in enumerate(dipole_list):
+            if v is not None:
+                dipole[i] = v
 
         # Use only the last (z) component
         dz = np.real(dipole[:, -1])
@@ -136,8 +143,12 @@ def main():
 
         ax_dip.plot(times_plot, dz, label=sim_name)
 
-        # HHG spectrum
-        omega, spec = compute_hhg_spectrum(times_plot, dz)
+        # HHG spectrum — drop NaN entries (initial t=0 state has no dipole)
+        valid = np.isfinite(dz)
+        if valid.sum() < 2:
+            print(f"  Warning: not enough finite dipole samples for HHG in {sim_name!r} — skipping spectrum.")
+            continue
+        omega, spec = compute_hhg_spectrum(times_plot[valid], dz[valid])
         # Keep only positive frequencies; rescale to harmonic order n = ω/ω₀
         pos = omega > 0
         harmonic_order = omega[pos] / args.omega0

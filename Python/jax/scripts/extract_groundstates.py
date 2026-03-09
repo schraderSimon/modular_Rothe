@@ -51,7 +51,7 @@ def is_imaginary_time_simulation(sim_name):
 
 def _variance_and_energy(params, coeffs, poly_string):
     """<H^2> - <H>^2 and <H> for one time step."""
-    S, H, H2 = generalPotentialSolver(params, poly_string).calculate_SHH2(t=0, splitting_type="none")
+    S, H, H2 = generalPotentialSolver(params, params, poly_string).calculate_SHH2(t=0, splitting_type="none")
     c = coeffs / jnp.sqrt(jnp.vdot(coeffs, S @ coeffs))
     E = jnp.vdot(c, H @ c)
     return float(jnp.real(jnp.vdot(c, H2 @ c) - E**2)), float(jnp.real(E))
@@ -71,14 +71,15 @@ def save_variance_cache(cache):
         pickle.dump(cache, f)
 
 
-def _compute_variances_for_file(sim_name, directory, max_time=-100j):
+def _compute_variances_for_file(sim_name, directory, max_time=-500j):
     """Return (times, variances, energies) for one simulation file."""
     n_wf, n_pot = parse_simulation_name(sim_name)
     data = load_rothe_file(sim_name, "none", path=str(directory))
     poly = make_hydrogen_string(n_pot, ExternalFieldParams())
 
     times = data["t"]
-    mask = np.imag(times) >= np.imag(max_time)
+    # Use absolute imaginary depth so the filter works for both +dt*j and -dt*j.
+    mask = np.abs(np.imag(times)) >= abs(np.imag(max_time))
     idx = np.where(mask)[0]
     times = times[mask]
     var = np.empty(len(idx))
@@ -90,7 +91,7 @@ def _compute_variances_for_file(sim_name, directory, max_time=-100j):
     return times, var, eng
 
 
-def compute_all_variances(max_time=-100j):
+def compute_all_variances(max_time=100j):
     """Compute (or load cached) variances for every imaginary-time simulation."""
     cache = load_variance_cache()
     modified = False
@@ -155,5 +156,26 @@ def extract_best_coefficients(cache=None):
 
 
 if __name__ == "__main__":
-    cache = compute_all_variances()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Extract ground states from imaginary-time propagation data.")
+    parser.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        help="Path to a specific HDF5 file to process (e.g. wave_function_data/mysim__none.h5). "
+        "If omitted, all imaginary-time files in DATA_DIRS are scanned.",
+    )
+    args = parser.parse_args()
+
+    if args.file is not None:
+        path = Path(args.file).resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        sim_name = path.name.replace("__none.h5", "")
+        # Use max_time=0j so all steps are included regardless of how far the run got.
+        cache = {sim_name: _compute_variances_for_file(sim_name, path.parent, max_time=0j)}
+    else:
+        cache = compute_all_variances()
+
     extract_best_coefficients(cache)

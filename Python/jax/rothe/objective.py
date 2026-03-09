@@ -23,24 +23,42 @@ class BasisParams:
     frozen: jnp.ndarray | None = None
 
 
-def _overlap_penalty(S_oo, S_of, S_nn, params_frozen, thresh=0.99**2):
-    """Penalty for near-linearly-dependent Gaussian pairs (|S_ij| >= sqrt(thresh)).
+def _overlap_penalty(S_dyn_dyn, S_dyn_frozen=None, center=0.97**2, sharpness=100.0, multiplier=1.0):
+    """Softplus penalty for near-linearly-dependent Gaussian pairs.
+
+    Uses a shifted softplus (smooth ReLU) in |S_ij|²:
+        pen(x) = softplus(sharpness * (x - center)) / sharpness
+    This is effectively zero for |S_ij|² << center and grows linearly
+    for |S_ij|² >> center, with a smooth transition of width ~1/sharpness.
+
+    At center=0.97, sharpness=100 the transition width is ~0.01 in |S_ij|²,
+    so the penalty is negligible below ~0.96 and clearly active above ~0.98.
 
     Dynamic-dynamic pairs are counted once (upper triangle).
-    Dynamic-frozen pairs are all counted.
-    S_ii = 1 always, so no normalisation is needed.
+    Dynamic-frozen pairs (when S_dyn_frozen is not None) are all counted.
     """
-    norm_fac = (1.0 - thresh) * 100
 
-    def _hinge(mat):
+    def _softplus_pen(mat):
         abs2 = jnp.abs(mat) ** 2
-        return jnp.where(abs2 >= thresh, (abs2 - thresh) / norm_fac, 0.0)
+        return jax.nn.softplus(sharpness * (abs2 - center)) / sharpness
 
-    if params_frozen is not None:
-        pen = jnp.sum(jnp.triu(_hinge(S_oo), k=1)) + jnp.sum(_hinge(S_of))
-    else:
-        pen = jnp.sum(jnp.triu(_hinge(S_nn), k=1))
+    pen = jnp.sum(jnp.triu(_softplus_pen(S_dyn_dyn), k=1))
+    if S_dyn_frozen is not None:
+        pen = pen + jnp.sum(_softplus_pen(S_dyn_frozen))
     return pen
+
+
+def _log_det_penalty(S_new_full, multiplier=100):
+    """Penalty -log(det(S)) / N on the full new-time basis overlap matrix.
+
+    Discourages near-linear dependence across all new basis functions (dynamic
+    and frozen).  As the basis approaches linear dependence, det(S) -> 0 and
+    the penalty diverges to +inf, pushing parameters apart.
+    """
+    S_herm = 0.5 * (S_new_full + jnp.conj(S_new_full).T)
+    eigvals = jnp.real(jnp.linalg.eigvalsh(S_herm))
+    eigvals_clipped = jnp.clip(eigvals, 1e-14, jnp.inf)
+    return -jnp.mean(jnp.log(eigvals_clipped)) / multiplier
 
 
 @partial(jax.jit, static_argnames=("SHH2", "splitting_type"))
@@ -112,26 +130,27 @@ def _assemble_AdA_and_rho(SHH2, splitting_eff, t_mid, dt, basis, SHH2_oldold):
         S_ff = S_xx[n_opt:, n_opt:]
         H_ff = H_xx[n_opt:, n_opt:]
         H2_ff = H2_xx[n_opt:, n_opt:]
-        AdA_ff = S_ff + dt_abs_sq_4 * H2_ff + dt_imag * H_ff
+        AdA_ff = S_ff + dt_abs_sq_4 * H2_ff - dt_imag * H_ff
 
         S_xf, H_xf, H2_xf = S_xx[:, n_opt:], H_xx[:, n_opt:], H2_xx[:, n_opt:]
         rho_xf = S_xf - dt_abs_sq_4 * H2_xf - 1j * dt_real * H_xf
         oo, of, xo = _compute_frozen_coupling_blocks(SHH2, t_mid, splitting_eff, basis)
         (S_oo, H_oo, H2_oo), (S_of, H_of, H2_of), (S_xo, H_xo, H2_xo) = oo, of, xo
 
-        AdA_oo = S_oo + dt_abs_sq_4 * H2_oo + dt_imag * H_oo
-        AdA_of = S_of + dt_abs_sq_4 * H2_of + dt_imag * H_of
+        AdA_oo = S_oo + dt_abs_sq_4 * H2_oo - dt_imag * H_oo
+        AdA_of = S_of + dt_abs_sq_4 * H2_of - dt_imag * H_of
         rho_xo = S_xo - dt_abs_sq_4 * H2_xo - 1j * dt_real * H_xo
 
         A_dagger_A = jnp.block([[AdA_oo, AdA_of], [jnp.conj(AdA_of).T, AdA_ff]])
         rho_mat = jnp.concatenate([rho_xo, rho_xf], axis=1)
-        penalty_mats = (S_oo, S_of, None)
+        S_new_full = jnp.block([[S_oo, S_of], [jnp.conj(S_of).T, S_ff]])
+        penalty_mats = (S_oo, S_of, S_new_full)
     else:
         S_nn, H_nn, H2_nn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.new, splitting_type=splitting_eff)
         S_xn, H_xn, H2_xn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.old, splitting_type=splitting_eff)
-        A_dagger_A = S_nn + dt_abs_sq_4 * H2_nn + dt_imag * H_nn
+        A_dagger_A = S_nn + dt_abs_sq_4 * H2_nn - dt_imag * H_nn
         rho_mat = S_xn - dt_abs_sq_4 * H2_xn - 1j * dt_real * H_xn
-        penalty_mats = (None, None, S_nn)
+        penalty_mats = (S_nn, None, S_nn)
 
     return A_dagger_A, rho_mat, B_dagger_B, penalty_mats
 
@@ -151,7 +170,7 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
     Returns:
         rothe_error: callable
             ``(params_new, params_old, coeffs_old, SHH2, t, dt,
-               params_frozen=None, return_cnew=False, lambda_=1e-10) -> error``
+               params_frozen=None, return_cnew=False, lambda_=1e-8) -> error``
 
             ``params_frozen`` (optional): nonlinear basis-function parameters that are
             included in the new-time wave function but held fixed during optimisation.
@@ -188,8 +207,12 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         rothe_error_val = jnp.real(overlap_term - projection_term)
 
         if not return_cnew:
-            S_oo, S_of, S_nn = penalty_mats
-            rothe_error_val = rothe_error_val + overlap_penalty_scale * _overlap_penalty(S_oo, S_of, S_nn, basis.frozen)
+            S_dyn_dyn, S_dyn_frozen, S_new_full = penalty_mats
+            multiplier = 1
+            penalty = (
+                multiplier * jnp.abs(overlap_penalty_scale) * _overlap_penalty(S_dyn_dyn, S_dyn_frozen, center=0.99**2)
+            )
+            rothe_error_val = rothe_error_val + penalty
 
         if return_cnew:
             return rothe_error_val, coeffs_new

@@ -23,16 +23,6 @@ def parse_args():
     parser.add_argument("--num_gaussians", type=int, default=1, help="Number of Gaussians")
     parser.add_argument("--epsilon", type=float, required=True, help="Global Rothe-error budget")
     parser.add_argument("--random_seed", type=int, default=0, help="RNG seed for Gaussian sampling")
-    parser.add_argument("--candidate_samples", type=int, default=1000, help="Number of sampled Gaussian candidates")
-    parser.add_argument(
-        "--candidate_progress_every", type=int, default=50, help="Print candidate-screening progress every N"
-    )
-    parser.add_argument(
-        "--candidate_max_seconds",
-        type=float,
-        default=None,
-        help="Optional max wall time (s) for candidate screening; None means no limit",
-    )
     return parser.parse_args()
 
 
@@ -44,9 +34,6 @@ def main():
     n = args.num_gaussians
     epsilon = args.epsilon
     random_seed = args.random_seed
-    candidate_samples = args.candidate_samples
-    candidate_progress_every = args.candidate_progress_every
-    candidate_max_seconds = args.candidate_max_seconds
     nsteps = int(100 / dt)
 
     # System configuration
@@ -76,9 +63,6 @@ def main():
         t=0,
         epsilon=epsilon,
         random_seed=random_seed,
-        candidate_samples=candidate_samples,
-        candidate_progress_every=candidate_progress_every,
-        candidate_max_seconds=candidate_max_seconds,
         params_old=params_init,
         coeffs_old=coeffs_init,
         rothe_grad_fn=rothe_vg_jit,

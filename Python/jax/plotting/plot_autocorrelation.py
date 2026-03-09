@@ -54,12 +54,13 @@ def main():
             continue
 
         times = data["t"]
-        autocorr = data.get("double_autocorrelation", None)
+        autocorr_list = data.get("double_autocorrelation", None)
 
-        if autocorr is None:
+        if autocorr_list is None or all(v is None for v in autocorr_list):
             print(f"Error: No double autocorrelation data found in {sim_name!r} — skipping.")
             continue
 
+        autocorr = np.array([v if v is not None else np.nan + 0j for v in autocorr_list])
         abs_autocorr = np.abs(autocorr)
 
         # Determine time axis

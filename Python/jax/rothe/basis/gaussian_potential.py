@@ -10,7 +10,6 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax.numpy import broadcast_to
 
 dtype_complex = jnp.complex128
 dtype_real = jnp.float64
@@ -137,110 +136,6 @@ def sum_over_batch(weighted_Bbk, x_BbkD):
 
 def get_row_col_contractions(x_bkD):
     return jnp.sum(x_bkD, axis=0), jnp.sum(x_bkD, axis=1)
-
-
-def _compute_alpha_and_b_gradients(quants):
-    w_dA_row_nD = quants["w_dA_row_nD"]
-    w_dA_col_nD = quants["w_dA_col_nD"]
-    w_c_row_nD = quants["w_c_row_nD"]
-    w_c_col_nD = quants["w_c_col_nD"]
-    w_row_nD = quants["w_row_nD"]
-    w_col_nD = quants["w_col_nD"]
-    mu_nD = quants["mu_nD"]
-
-    grad_alpha_i_conj_nD = w_dA_row_nD + 2 * mu_nD * w_c_row_nD - mu_nD**2 * w_row_nD
-    grad_alpha_j_nD = w_dA_col_nD + 2 * mu_nD * w_c_col_nD - mu_nD**2 * w_col_nD
-
-    grad_alpha_combined_nD = grad_alpha_i_conj_nD + grad_alpha_j_nD
-    grad_b_antisym_nD = 1j * (grad_alpha_j_nD - grad_alpha_i_conj_nD)
-
-    return grad_alpha_combined_nD, grad_b_antisym_nD
-
-
-def _compute_mu_gradients(quants):
-    w_c_row_nD = quants["w_c_row_nD"]
-    w_c_col_nD = quants["w_c_col_nD"]
-    w_row_nD = quants["w_row_nD"]
-    w_col_nD = quants["w_col_nD"]
-    alpha_nD = quants["alpha_nD"]
-    mu_nD = quants["mu_nD"]
-    p_nD = quants["p_nD"]
-
-    grad_mu_i_nD = 2 * alpha_nD.conj() * (w_c_row_nD - mu_nD * w_row_nD) + 1j * p_nD * w_row_nD
-    grad_mu_j_nD = 2 * alpha_nD * (w_c_col_nD - mu_nD * w_col_nD) - 1j * p_nD * w_col_nD
-
-    return grad_mu_i_nD + grad_mu_j_nD
-
-
-def _compute_p_gradients(quants):
-    w_c_row_nD = quants["w_c_row_nD"]
-    w_c_col_nD = quants["w_c_col_nD"]
-    w_row_nD = quants["w_row_nD"]
-    w_col_nD = quants["w_col_nD"]
-    mu_nD = quants["mu_nD"]
-
-    grad_p_i_nD = 1j * (mu_nD * w_row_nD - w_c_row_nD)
-    grad_p_j_nD = 1j * (w_c_col_nD - mu_nD * w_col_nD)
-
-    return grad_p_i_nD + grad_p_j_nD
-
-
-def _compute_a_gradients(quants, grad_alpha_combined_nD):
-    a_nD = quants["a_nD"]
-    n, D = a_nD.shape
-    w_sum_n = quants["w_sum_n"]
-
-    return 2 * a_nD * grad_alpha_combined_nD + 0.5 / a_nD * broadcast_to(w_sum_n[:, None], (n, D))
-
-
-def compute_param_gradients(weighted_Bbk, centers_BbkD, allA_BbkD, alpha_nD, mu_nD, p_nD, a_nD):
-    """
-    Compute gradients w.r.t. basis parameters from weighted contributions.
-
-    Optimization: Contract over B first to get (n,n,D), then sum rows/cols.
-    """
-    n, D = alpha_nD.shape
-    inv_A_BbkD = 1.0 / allA_BbkD
-    centers_sq_BbkD = centers_BbkD**2
-    dE_dA_BbkD = -(centers_sq_BbkD + 0.5 * inv_A_BbkD)
-
-    dA_bkD = sum_over_batch(weighted_Bbk, dE_dA_BbkD)
-    w_dA_col_nD, w_dA_row_nD = get_row_col_contractions(dA_bkD)
-
-    c_bkD = sum_over_batch(weighted_Bbk, centers_BbkD)
-    w_c_col_nD, w_c_row_nD = get_row_col_contractions(c_bkD)
-
-    w_bk = jnp.sum(weighted_Bbk, axis=0)
-    w_col_n, w_row_n = get_row_col_contractions(w_bk)
-    w_col_nD = jnp.broadcast_to(w_col_n[:, None], (n, D))
-    w_row_nD = jnp.broadcast_to(w_row_n[:, None], (n, D))
-    w_sum_n = w_col_n + w_row_n
-
-    quants = {
-        "w_dA_row_nD": w_dA_row_nD,
-        "w_dA_col_nD": w_dA_col_nD,
-        "w_c_row_nD": w_c_row_nD,
-        "w_c_col_nD": w_c_col_nD,
-        "w_row_nD": w_row_nD,
-        "w_col_nD": w_col_nD,
-        "alpha_nD": alpha_nD,
-        "mu_nD": mu_nD,
-        "p_nD": p_nD,
-        "a_nD": a_nD,
-        "w_sum_n": w_sum_n,
-    }
-
-    grad_alpha_combined_nD, grad_b_antisym_nD = _compute_alpha_and_b_gradients(quants)
-    grad_mu_nD = _compute_mu_gradients(quants)
-    grad_p_nD = _compute_p_gradients(quants)
-    grad_a_nD = _compute_a_gradients(quants, grad_alpha_combined_nD)
-
-    return grad_a_nD, grad_b_antisym_nD, grad_mu_nD, grad_p_nD
-
-
-def assemble_param_gradients_fused(grad_a, grad_b_antisym, grad_mu, grad_p):
-    grad_params_nD4 = jnp.stack([grad_a, grad_b_antisym, grad_mu, grad_p], axis=2)
-    return jnp.real(grad_params_nD4)
 
 
 # ---------------------------------------------------------------------------

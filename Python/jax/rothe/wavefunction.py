@@ -257,7 +257,7 @@ def update_polynomial_values(polynomial, t):
         return None
     evaluated_polynomial = {}
     for key, val in polynomial.items():
-        evaluated_polynomial[key] = val if not callable(val) else (val(t)).astype(float)
+        evaluated_polynomial[key] = val if not callable(val) else jnp.asarray(val(t), dtype=jnp.float64)
     return evaluated_polynomial
 
 

@@ -1,9 +1,4 @@
-"""
-Optimization helper functions for the Rothe solver.
-
-Contains utility functions for parameter transformation, objective construction,
-and BFGS initialization strategies (including BB1 scaling).
-"""
+"""Optimization helper functions for the Rothe solver."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -26,45 +21,57 @@ class RotheObjectiveContext:
     SHH2_oldold: Any = None
 
 
-def build_diagonal_scaling_from_grad(grad_p, epsilon=1e-12):
+# ---------------------------------------------------------------------------
+# Tanh-bounded parameter transform
+# ---------------------------------------------------------------------------
+
+
+def compute_tanh_bounds(params_init_flat, params_shape, p=0.5, q=0.1, a_min=1e-6):
+    """Compute element-wise (lb, ub) from the initial parameter vector.
+
+    lb_j = init_j - p * |init_j| - q
+    ub_j = init_j + p * |init_j| + q
+
+    The lower bound for width parameters (index k=0 in the last axis of
+    the (n, D, 4) layout) is clamped to *a_min* so that Gaussian widths
+    stay strictly positive.
     """
-    Build diagonal scaling S from p-space gradient.
+    params_init_flat = np.asarray(params_init_flat, dtype=float)
+    half_width = p * np.abs(params_init_flat) + q
+    lb = params_init_flat - half_width
+    ub = params_init_flat + half_width
 
-    grad_p: np.ndarray, shape (n, D, 4)
-        Gradient in p-space reshaped like p.
-    Returns:
-        S_flat:     np.ndarray, shape (n*D*4,)   (diagonal of S)
-        S_flat_jax: jnp.ndarray, same data, for JAX ops
+    # Clamp lower bound of width parameter a (k=0) to a_min.
+    a_mask = np.zeros(params_shape, dtype=bool)
+    a_mask[:, :, 0] = True
+    a_mask_flat = a_mask.ravel()
+    lb[a_mask_flat] = np.maximum(lb[a_mask_flat], a_min)
+    return lb, ub
+
+
+def tanh_forward(alpha_prime, lb, ub):
+    """Map unconstrained α' → bounded α ∈ (lb, ub).
+
+    α = lb + (tanh(α') + 1) * (ub - lb) / 2
     """
-    abs_grad = np.abs(grad_p)
-    # RMS per parameter type (last axis: a, b, mu, p)
-    group_rms = np.sqrt(np.mean(abs_grad**2, axis=(0, 1)))  # shape (4,)
-
-    # Target RMS: average of the four
-    desired_RMS = np.mean(group_rms)
-
-    # Scale factors: s_k = avg / RMS_k, avoid division by zero
-    scale_types = np.where(group_rms > epsilon, desired_RMS / group_rms, 1.0)  # shape (4,)
-
-    # Broadcast to full shape (n, D, 4)
-    scale_arr = np.einsum("...k,k->...k", np.ones_like(grad_p), scale_types)  # last axis broadcasts
-    S_flat = scale_arr.ravel()
-    S_flat_jax = jnp.asarray(S_flat)
-    return S_flat, S_flat_jax
+    return lb + (np.tanh(alpha_prime) + 1.0) * (ub - lb) / 2.0
 
 
-def params_flat_to_y_flat(params_flat, S_flat):
+def tanh_inverse(alpha, lb, ub):
+    """Map bounded α → unconstrained α'.
+
+    α' = atanh(2*(α - lb) / (ub - lb) - 1)
+
+    At the initial point (midpoint of [lb, ub]) this returns 0.
     """
-    Change of basis params = S y  =>  y = S^{-1} params.
-    """
-    return params_flat / S_flat
+    z = 2.0 * (alpha - lb) / (ub - lb) - 1.0
+    z = np.clip(z, -1 + 1e-12, 1 - 1e-12)
+    return np.arctanh(z)
 
 
-def y_flat_to_params_flat(y_flat, S_flat):
-    """
-    Inverse change of basis y -> params = S y.
-    """
-    return y_flat * S_flat
+def tanh_forward_jacobian(alpha_prime, lb, ub):
+    """Element-wise dα/dα' = (ub - lb)/2 · sech²(α')."""
+    return (ub - lb) / 2.0 * (1.0 - np.tanh(alpha_prime) ** 2)
 
 
 def make_objective_params(rothe_error_and_gradient, params_shape, context):
@@ -91,7 +98,11 @@ def make_objective_params(rothe_error_and_gradient, params_shape, context):
         val, g = rothe_error_and_gradient(
             params_new, params_old, coeffs_old, SHH2, t, dt, params_frozen, SHH2_oldold=SHH2_oldold
         )
-        return float(val), np.asarray(jnp.ravel(g))
+        val_float = float(val)
+        grad_flat = np.asarray(jnp.ravel(g))
+        if not np.isfinite(val_float) or not np.all(np.isfinite(grad_flat)):
+            return 1e30, np.zeros_like(np.asarray(theta_flat), dtype=float)
+        return val_float, grad_flat
 
     def g_only_params(theta_flat):
         _, g = f_and_g_params(theta_flat)
@@ -100,56 +111,40 @@ def make_objective_params(rothe_error_and_gradient, params_shape, context):
     return f_and_g_params, g_only_params
 
 
-def make_objective_y(rothe_error_and_gradient, params_shape, S_flat_jax, context):
-    """
-    Wrap rothe_error_and_gradient into y-space objective, with params = S y.
+def make_objective_tanh(f_and_g_params, lb, ub):
+    """Wrap a flat params-space objective into the tanh-bounded space.
 
-    The required ``context`` carries the shared objective inputs
-    (params_old, coeffs_old, SHH2, t, dt, params_frozen, SHH2_oldold).
+    The optimizer works with unconstrained α'; internally this applies
+    α = tanh_forward(α', lb, ub) and chains the gradient via the Jacobian.
 
     Returns:
-        f_and_g_y(theta_y_flat) -> (float value, np.ndarray grad_y_flat)
+        f_and_g_tanh(alpha_prime_flat) -> (float value, np.ndarray grad_flat)
     """
-    params_old = context.params_old
-    coeffs_old = context.coeffs_old
-    SHH2 = context.SHH2
-    t = context.t
-    dt = context.dt
-    params_frozen = context.params_frozen
-    SHH2_oldold = context.SHH2_oldold
+    lb = np.asarray(lb, dtype=float)
+    ub = np.asarray(ub, dtype=float)
 
-    def f_and_g_y(theta_y_flat):
-        theta_y = jnp.asarray(theta_y_flat)
-        params_flat = theta_y * S_flat_jax  # params = S * y
-        params_new = params_flat.reshape(params_shape)
-        val, grad_params = rothe_error_and_gradient(
-            params_new, params_old, coeffs_old, SHH2, t, dt, params_frozen, SHH2_oldold=SHH2_oldold
-        )
-        grad_params_flat = jnp.ravel(grad_params)
-        g_y_flat = grad_params_flat * S_flat_jax  # g_y = S * grad_params
-        return float(val), np.asarray(g_y_flat)
+    def f_and_g_tanh(alpha_prime_flat):
+        alpha_prime = np.asarray(alpha_prime_flat, dtype=float)
+        alpha = tanh_forward(alpha_prime, lb, ub)
+        val, grad_alpha = f_and_g_params(alpha)
+        jac = tanh_forward_jacobian(alpha_prime, lb, ub)
+        grad_prime = grad_alpha * jac
+        return val, grad_prime
 
-    return f_and_g_y
+    return f_and_g_tanh
 
 
 def compute_gtol(initial_err):
     """
     Stopping criterion for BFGS.
     """
-    return max(initial_err / 10.0, 1e-10)
+    return initial_err / 10
 
 
-def make_initial_hessian_y(dim_y, grad_y0_norm):
-    """
-    Simple scaled identity initial inverse Hessian in y-space.
-    """
-    return np.eye(dim_y) / grad_y0_norm
-
-
-def maybe_apply_bb1_scaling(params_old, params_oldold, T, T_inv, grad_theta0_flat, g_only_params, t, hess_inv_default):
+def maybe_apply_bb1_scaling(params_old, params_oldold, g_only_params, t, hess_inv_default):
     """
     Optionally apply BB1 (Barzilai-Borwein type 1) scaling to the
-    initial inverse Hessian in theta-space.
+    initial inverse Hessian in parameter space.
 
     If the curvature condition is satisfied by the previous two steps,
     return BB1 * I. Otherwise, return the default.
@@ -161,33 +156,39 @@ def maybe_apply_bb1_scaling(params_old, params_oldold, T, T_inv, grad_theta0_fla
     params_old_flat = np.asarray(params_old).ravel()
     params_oldold_flat = np.asarray(params_oldold).ravel()
 
-    # Step in p-space
-    delta_params = params_old_flat - params_oldold_flat  # s_params
+    # Step in parameter space.
+    s_vec = params_old_flat - params_oldold_flat
 
-    # Step in theta-space: s_theta = T^{-1} delta_p
-    s_theta = T_inv @ delta_params
-
-    # Gradient at old-old point in p-space
+    # Gradients at both previous solved steps in p-space (independent of start guess)
+    grad_old_params_flat = np.asarray(g_only_params(params_old_flat))
     grad_oldold_params_flat = np.asarray(g_only_params(params_oldold_flat))
 
-    # Gradient in theta at old-old: g_theta_oldold = T^T g_p_oldold
-    g_theta_oldold = T.T @ grad_oldold_params_flat
+    # Gradient differences in parameter space.
+    y_vec = grad_old_params_flat - grad_oldold_params_flat
 
-    # Difference in theta-gradients
-    grad_theta0_flat = np.asarray(grad_theta0_flat)
-    y_vec = grad_theta0_flat - g_theta_oldold
+    denom = float(s_vec @ y_vec)
+    num = float(s_vec @ s_vec)
 
-    denom = float(s_theta @ y_vec)
-    num = float(s_theta @ s_theta)
-
-    if not np.isfinite(denom) or denom <= 0.0:
+    if not np.isfinite(denom) or not np.isfinite(num):
         print(f"{t} does not fulfill curvature condition: denom={denom}, using default.")
         return hess_inv_default
 
-    BB1 = num / denom
+    if denom <= 0.0:
+        # Negative curvature: use |denom| to preserve scale while avoiding sign flip
+        denom_safe = max(abs(denom), 1e-14 * max(num, 1e-30))
+        print(f"{t} does not fulfill curvature condition: denom={denom}, using |denom|={denom_safe:.3e}.")
+    else:
+        denom_safe = denom
+
+    BB1 = num / denom_safe
     if not np.isfinite(BB1) or BB1 <= 0.0:
         print(f"{t} invalid BB1={BB1}, using default.")
         return hess_inv_default
+
+    BB1_max = 1e8
+    if BB1 > BB1_max:
+        print(f"{t} BB1={BB1:.3e} exceeds cap {BB1_max:.3e}, clamping.")
+        BB1 = BB1_max
 
     dim = hess_inv_default.shape[0]
     return BB1 * np.eye(dim)

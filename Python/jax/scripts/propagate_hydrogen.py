@@ -20,7 +20,7 @@ from rothe.systems.hydrogen import (
 )
 
 
-def make_dynamic_params(n_per_side=10, width=1 / np.sqrt(2), D=3, z_spacing=0.1):
+def make_dynamic_params(n_per_side=10, width=1 / np.sqrt(2), D=4, z_spacing=0.5):
     """Create 2*n_per_side Gaussians placed symmetrically along the z-axis."""
     n_total = 2 * n_per_side
     params = jnp.zeros((n_total, D, 4), dtype=jnp.float64)
@@ -62,6 +62,12 @@ def parse_args():
         help="Number of Gaussians in the pre-fitted V^2 approximation. "
         "If given, uses square_coeffs CSV instead of exact squaring.",
     )
+    parser.add_argument(
+        "--frozen",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Freeze ground-state Gaussians (default: True). " "Use --no-frozen to make all Gaussians optimizable.",
+    )
     return parser.parse_args()
 
 
@@ -75,10 +81,17 @@ def main():
     epsilon = args.epsilon
     random_seed = args.random_seed
     t_start = args.t_start
+    is_imaginary_time = bool(dt.imag)
+
     external_field_params = ExternalFieldParams()
-    external_field_params.E0 = 0.12  # Super strong field for testing
+    if not is_imaginary_time:
+        external_field_params.E0 = 0.06
+    else:
+        external_field_params.E0 = 0.0
+    use_frozen = args.frozen and not is_imaginary_time
+    num_dynamic_eff = 0 if (is_imaginary_time or not use_frozen) else args.num_dynamic
     string_name = set_up_hydrogen_string_name(
-        external_field_params, ngp, ngwf, dt, epsilon, num_dynamic=args.num_dynamic
+        external_field_params, ngp, ngwf, dt, epsilon, num_dynamic=num_dynamic_eff
     )
     tfinal = external_field_params.t_final
     nsteps = int(jnp.ceil(tfinal / jnp.abs(dt)))
@@ -86,6 +99,10 @@ def main():
     # Set up the initial wavefunction and potential
     hydrogen_string = make_hydrogen_string(num_gauss_potential, external_field_params)
     try:
+        if dt.imag:
+            raise FileNotFoundError(
+                "Imaginary time propagation should start from random initial state, not ground state data."
+            )
         initial_linear_coeffs, params_init = read_best_coefficients(
             num_gauss_wavefunction=num_gauss_wavefunction, num_gauss_potential=num_gauss_potential
         )
@@ -110,18 +127,22 @@ def main():
         if args.num_gauss_fit is not None
         else None
     )
-    # Ground-state Gaussians are frozen; create dynamic Gaussians for optimisation
-    params_frozen = params_init
-    params_dynamic = make_dynamic_params(D=int(params_init.shape[1]), n_per_side=args.num_dynamic)
 
-    # Full initial wave function: [dynamic | frozen]
-    # params_old stores all basis functions; the leading n_dynamic are optimised
-    n_dynamic = params_dynamic.shape[0]
-    params_all = jnp.concatenate([params_dynamic, params_frozen], axis=0)
-
-    # Initial linear coefficients: dynamic part starts at zero, frozen part
-    # carries the ground-state coefficients.
-    coeffs_all = jnp.concatenate([jnp.zeros(n_dynamic, dtype=jnp.complex128), jnp.asarray(initial_linear_coeffs)])
+    if not use_frozen:
+        # All Gaussians are dynamic, nothing is frozen.
+        params_all = jnp.asarray(params_init)
+        coeffs_all = jnp.asarray(initial_linear_coeffs)
+        params_frozen_solver = None
+    else:
+        # Real-time propagation with frozen core: ground-state Gaussians are
+        # frozen; prepend dynamic Gaussians that are free to move.
+        params_frozen_solver = params_init
+        params_dynamic = make_dynamic_params(D=int(params_init.shape[1]), n_per_side=args.num_dynamic)
+        n_dynamic = params_dynamic.shape[0]
+        params_all = jnp.concatenate([params_dynamic, params_frozen_solver], axis=0)
+        # Dynamic part starts with zero coefficients; frozen part carries the
+        # ground-state coefficients.
+        coeffs_all = jnp.concatenate([jnp.zeros(n_dynamic, dtype=jnp.complex128), jnp.asarray(initial_linear_coeffs)])
 
     # Set up SHH2 and Rothe error/gradient functions
     SHH2 = set_up_SHH2(potential_string=hydrogen_string, D=3, squared_string=squared_string)
@@ -140,7 +161,7 @@ def main():
         rothe_nograd=rothe_error,
         splitting_type=splitting_type,
         output_config=OutputConfig(name=string_name, polynomial_string=hydrogen_string, epsilon=epsilon),
-        params_frozen=params_frozen,
+        params_frozen=params_frozen_solver,
     )
     nsteps_total = nsteps
     nsteps = resume_or_initialize_rothe(

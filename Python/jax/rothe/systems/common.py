@@ -47,7 +47,7 @@ def set_up_SHH2(potential_string, D, squared_string=None):
 def eval_initial_state_properties(initial_linear_coeffs, params_init, SHH2):
     """Evaluate and print norm, energy, and variance of an initial state."""
     initial_linear_coeffs = jnp.array(initial_linear_coeffs)
-    S, H, H2 = SHH2(0, params_init)
+    S, H, H2 = SHH2(0, params_init, params_init, "none")
     norm = jnp.vdot(initial_linear_coeffs, S @ initial_linear_coeffs)
     initial_linear_coeffs = initial_linear_coeffs / jnp.sqrt(norm)
     E0 = jnp.vdot(initial_linear_coeffs, H @ initial_linear_coeffs)
@@ -83,6 +83,8 @@ def resume_or_initialize_rothe(
         print(f"Resumed at t={info['t']} (step {info['idx']}), trimmed={info['trimmed']}")
         return nsteps_total - info["idx"]
     except FileNotFoundError:
+        n_frozen = rothesolver.params_frozen.shape[0] if rothesolver.params_frozen is not None else 0
+        n_dynamic_init = params.shape[0] - n_frozen if params is not None else 0
         rng_state = rothesolver._rng.bit_generator.state if hasattr(rothesolver, "_rng") else None
         save_rothe_state(
             solver_name,
@@ -94,6 +96,7 @@ def resume_or_initialize_rothe(
             float(initial_error),
             params=params,
             coeffs=coeffs,
+            n_dynamic=n_dynamic_init,
             rng_state=rng_state,
             path=rothesolver.out_dir,
         )
