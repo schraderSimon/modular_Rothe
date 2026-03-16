@@ -46,6 +46,7 @@ def parse_args():
         help="Rothe splitting mode to benchmark",
     )
     parser.add_argument("--epsilon", type=float, required=True)
+    parser.add_argument("--regularization_lambda", type=float, default=1e-10, help="Tikhonov regularization strength")
     parser.add_argument("--random_seed", type=int, default=0, help="RNG seed for Gaussian sampling")
     parser.add_argument("--maxiter", type=int, default=50)
     parser.add_argument("--num_dynamic", type=int, default=10, help="Number of dynamic Gaussians per side")
@@ -79,9 +80,12 @@ def main():
     maxiter = args.maxiter
     dt = args.dt
     epsilon = args.epsilon
+    regularization_lambda = args.regularization_lambda
     random_seed = args.random_seed
     t_start = args.t_start
     is_imaginary_time = bool(dt.imag)
+    if not is_imaginary_time:
+        dt = float(dt.real)
 
     external_field_params = ExternalFieldParams()
     if not is_imaginary_time:
@@ -91,7 +95,7 @@ def main():
     use_frozen = args.frozen and not is_imaginary_time
     num_dynamic_eff = 0 if (is_imaginary_time or not use_frozen) else args.num_dynamic
     string_name = set_up_hydrogen_string_name(
-        external_field_params, ngp, ngwf, dt, epsilon, num_dynamic=num_dynamic_eff
+        external_field_params, ngp, ngwf, dt, epsilon, regularization_lambda, num_dynamic=num_dynamic_eff
     )
     tfinal = external_field_params.t_final
     nsteps = int(jnp.ceil(tfinal / jnp.abs(dt)))
@@ -154,6 +158,7 @@ def main():
         dt=dt,
         t=0,
         epsilon=epsilon,
+        regularization_lambda=regularization_lambda,
         random_seed=random_seed,
         params_old=params_all,
         coeffs_old=coeffs_all,
@@ -167,7 +172,7 @@ def main():
     nsteps = resume_or_initialize_rothe(
         rothesolver=rothesolver,
         nsteps_total=nsteps,
-        solver_name=rothesolver.name,
+        solver_name=rothesolver.output_config.name,
         splitting_type=splitting_type,
         potential_string=hydrogen_string,
         epsilon=epsilon,

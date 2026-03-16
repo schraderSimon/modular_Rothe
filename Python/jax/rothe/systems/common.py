@@ -2,7 +2,7 @@
 Common system helpers shared across physical systems.
 """
 
-from attr import dataclass
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from rothe.wavefunction import generalPotentialSolver
@@ -91,6 +91,7 @@ def resume_or_initialize_rothe(
             splitting_type,
             potential_string,
             epsilon,
+            rothesolver.regularization_lambda,
             dt,
             0.0,
             float(initial_error),
@@ -98,7 +99,7 @@ def resume_or_initialize_rothe(
             coeffs=coeffs,
             n_dynamic=n_dynamic_init,
             rng_state=rng_state,
-            path=rothesolver.out_dir,
+            path=rothesolver.output_config.out_dir,
         )
         print("No prior file. Starting fresh at t=0.")
         return nsteps_total

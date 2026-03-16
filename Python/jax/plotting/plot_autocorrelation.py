@@ -57,7 +57,11 @@ def main():
         autocorr_list = data.get("double_autocorrelation", None)
 
         if autocorr_list is None or all(v is None for v in autocorr_list):
-            print(f"Error: No double autocorrelation data found in {sim_name!r} — skipping.")
+            print(
+                "Error: No double autocorrelation data found in "
+                f"{sim_name!r} — file may exist but this observable was not saved during propagation. "
+                "Skipping."
+            )
             continue
 
         autocorr = np.array([v if v is not None else np.nan + 0j for v in autocorr_list])

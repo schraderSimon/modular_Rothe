@@ -15,13 +15,12 @@ jax.config.update("jax_compilation_cache_dir", str(__import__("pathlib").Path.ho
 def parse_args():
     """Parse command-line arguments for Henon-Heiles simulation."""
     parser = argparse.ArgumentParser(description="Simulate Henon-Heiles system using the Rothe method.")
-    parser.add_argument(
-        "--dim", type=int, default=2, choices=[1, 2, 4, 6], help="Dimension of the system (1, 2, 4, or 6)"
-    )
+    parser.add_argument("--dim", type=int, default=2, help="Dimension of the system (1, 2, 4, or 6)")
     parser.add_argument("--splitting_type", type=str, default="none", help="Splitting type for Rothe propagation")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step")
     parser.add_argument("--num_gaussians", type=int, default=1, help="Number of Gaussians")
     parser.add_argument("--epsilon", type=float, required=True, help="Global Rothe-error budget")
+    parser.add_argument("--regularization_lambda", type=float, default=1e-10, help="Tikhonov regularization strength")
     parser.add_argument("--random_seed", type=int, default=0, help="RNG seed for Gaussian sampling")
     return parser.parse_args()
 
@@ -29,22 +28,22 @@ def parse_args():
 def main():
     args = parse_args()
     splitting_type = args.splitting_type
-    dim = args.dim
+    D = args.dim
     dt = args.dt
     n = args.num_gaussians
     epsilon = args.epsilon
+    regularization_lambda = args.regularization_lambda
     random_seed = args.random_seed
     nsteps = int(100 / dt)
 
     # System configuration
-    example_string = make_henon_heiles_string(dim)
-    D = dim
+    hehe_string = make_henon_heiles_string(D)
 
     # Initialize parameters
     params_init = initialize_henon_heiles_params(n=n, D=D, seed=42)
 
     # Set up SHH2 and Rothe error/gradient functions
-    SHH2 = set_up_SHH2(potential_string=example_string, D=D)
+    SHH2 = set_up_SHH2(potential_string=hehe_string, D=D)
     rothe_error, rothe_vg_jit = setUpRotheErrorAndGradient_jit(splitting_type)
 
     # Set up wavefunction coefficients
@@ -53,38 +52,33 @@ def main():
     S0, _, _ = SHH2(0, params_init, params_init, splitting_type=splitting_type)
     coeffs_init = coeffs_init / jnp.sqrt(jnp.vdot(coeffs_init, S0 @ coeffs_init))
 
-    # Calculate initial error
-    initial_error = rothe_error(params_init, params_init, coeffs_init, SHH2, 0, dt)
-
+    filename = f"HenonHeiles_{D}D_{n}__epsilon={epsilon:.1e}__lambda={regularization_lambda:.1e}"
     # Set up Rothe solver
     rothesolver = RotheSolver(
         SHH2=SHH2,
         dt=dt,
         t=0,
         epsilon=epsilon,
+        regularization_lambda=regularization_lambda,
         random_seed=random_seed,
         params_old=params_init,
         coeffs_old=coeffs_init,
         rothe_grad_fn=rothe_vg_jit,
         rothe_nograd=rothe_error,
         splitting_type=splitting_type,
-        output_config=OutputConfig(
-            name="HenonHeiles_%dD_%d__epsilon=%0.3e" % (D, n, epsilon),
-            polynomial_string=example_string,
-            epsilon=epsilon,
-        ),
+        output_config=OutputConfig(name=filename, polynomial_string=hehe_string, epsilon=epsilon),
     )
 
     nsteps_total = nsteps
     nsteps = resume_or_initialize_rothe(
         rothesolver=rothesolver,
         nsteps_total=nsteps,
-        solver_name=rothesolver.name,
+        solver_name=rothesolver.output_config.name,
         splitting_type=splitting_type,
-        potential_string=example_string,
+        potential_string=hehe_string,
         epsilon=epsilon,
         dt=dt,
-        initial_error=initial_error,
+        initial_error=0,
         params=params_init,
         coeffs=coeffs_init,
     )

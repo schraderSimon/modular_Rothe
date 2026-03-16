@@ -34,7 +34,7 @@ def find_string(lines: list[str], target: str) -> int:
 
 
 def make_polynomial(poly_terms, dimension):
-    poly_list = []
+    seen_powers = []
     polynomial = {}
     t = sp.symbols("t")
     for line_idx, raw in enumerate(poly_terms):
@@ -52,9 +52,9 @@ def make_polynomial(poly_terms, dimension):
         for d in range(dimension):
             hits = re.findall(rf"x{d}(?!\d)", poly)
             line_vals.append(len(hits))
-        if line_vals in poly_list:
+        if line_vals in seen_powers:
             raise ValueError(f"Duplicate polynomial found at line {line_idx + 3}: {raw}")
-        poly_list.append(line_vals)
+        seen_powers.append(line_vals)
         polynomial[tuple(line_vals)] = val
     return polynomial
 
@@ -149,10 +149,10 @@ def get_exponential_coeffs(string: str) -> tuple[float, float, list[float]]:
 def make_exponential(exp_terms, dimension):
     exponential = []
     for line_idx, raw in enumerate(exp_terms):
-        linCoeff, width, pos = get_exponential_coeffs(raw)
+        lincoeff, width, pos = get_exponential_coeffs(raw)
         if len(pos) != dimension:
             raise ValueError(f"Exponential position length does not match dimension at line {line_idx + 3}: {raw}")
-        exponential.append((linCoeff, width, pos))
+        exponential.append((lincoeff, width, pos))
     return exponential
 
 

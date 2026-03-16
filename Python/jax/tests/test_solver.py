@@ -8,6 +8,7 @@ exactly representable by a single Gaussian.  This makes it possible to assess:
   3. consistency of the Rothe error with the expected dt scaling.
 """
 
+import numpy as np
 import pytest
 
 import jax.numpy as jnp
@@ -39,6 +40,7 @@ def _make_solver(dt):
         dt=dt,
         t=0.0,
         epsilon=1.0,
+        regularization_lambda=1e-12,
         params_old=params,
         coeffs_old=coeffs,
         rothe_grad_fn=rothe_vg_jit,
@@ -110,6 +112,7 @@ def test_rothe_error_decreases_with_finer_dt():
             dt=dt,
             t=0.0,
             epsilon=1.0,
+            regularization_lambda=1e-12,
             params_old=params_displaced,
             coeffs_old=coeffs,
             rothe_grad_fn=rothe_vg_jit,
@@ -164,3 +167,27 @@ def test_energy_conserved_over_multiple_steps():
     c = solver.coeffs_old / jnp.sqrt(norm)
     energy = float(jnp.real(jnp.vdot(c, H @ c)))
     assert abs(energy - E0_expected) < 1e-3, f"Energy after {n_steps} steps: {energy:.6f} (expected {E0_expected})"
+
+
+def test_candidate_overlap_detects_duplicate_gaussian():
+    """Suggested candidates identical to an existing Gaussian should be discarded."""
+    solver, _ = _make_solver(dt=0.05)
+    params_base = _ground_state_params_1d()
+    candidate_duplicate = params_base[:1]
+    max_overlap = solver.candidate_max_overlap(
+        params_base, candidate_duplicate, t_mid=solver.t + solver.dt / 2, splitting_eff="none"
+    )
+    assert max_overlap > 0.99, f"Expected duplicate candidate overlap > 0.99, got {max_overlap:.6f}"
+
+
+def test_overlap_filter_discards_duplicate_candidates():
+    """Batch overlap screening should remove duplicate suggested Gaussians."""
+    solver, _ = _make_solver(dt=0.05)
+    params_base = _ground_state_params_1d()
+    candidates = jnp.concatenate([params_base[:1], params_base[:1]], axis=0)
+    kept_candidates, discarded_count, max_overlaps = solver.filter_candidate_gaussians_by_overlap(
+        params_base, candidates, t_mid=solver.t + solver.dt / 2, splitting_eff="none"
+    )
+    assert discarded_count == 2, f"Expected 2 discarded candidates, got {discarded_count}"
+    assert kept_candidates.shape[0] == 0, f"Expected 0 kept candidates, got {kept_candidates.shape[0]}"
+    assert np.all(max_overlaps > 0.99), f"Expected all max overlaps > 0.99, got {max_overlaps}"

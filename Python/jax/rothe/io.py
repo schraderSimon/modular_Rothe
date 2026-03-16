@@ -4,7 +4,8 @@ HDF5 I/O for the Rothe solver.
 Each simulation is stored in a single HDF5 file with the layout::
 
     {sim_name}__{splitting_type}.h5
-    ├── attrs: sim_name, splitting_type, dt (complex128), epsilon, created
+    ├── attrs: sim_name, splitting_type, dt (complex128), epsilon,
+    │         regularization_lambda, created
     ├── polynomial_string   (scalar string dataset)
     └── steps/
         ├── 0000/
@@ -26,10 +27,10 @@ own shape.  Variable Gaussian counts across steps are natural.
 import json
 import os
 import time
+from dataclasses import dataclass
 
 import h5py
 import numpy as np
-from attr import dataclass
 
 from rothe._config import PROJECT_ROOT
 
@@ -110,6 +111,7 @@ def save_rothe_state(
     splitting_type,
     polynomial_string,
     epsilon,
+    regularization_lambda,
     dt,
     t,
     rothe_error,
@@ -145,6 +147,7 @@ def save_rothe_state(
         f.attrs.setdefault("splitting_type", str(splitting_type))
         f.attrs.setdefault("dt", np.complex128(dt_scalar))
         f.attrs.setdefault("epsilon", float(epsilon))
+        f.attrs.setdefault("regularization_lambda", float(regularization_lambda))
         f.attrs.setdefault("created", time.time())
 
         if "polynomial_string" not in f:

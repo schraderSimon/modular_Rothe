@@ -19,6 +19,7 @@ class RotheObjectiveContext:
     dt: Any
     params_frozen: Any = None
     SHH2_oldold: Any = None
+    regularization_lambda: float = 1e-12
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +93,20 @@ def make_objective_params(rothe_error_and_gradient, params_shape, context):
     dt = context.dt
     params_frozen = context.params_frozen
     SHH2_oldold = context.SHH2_oldold
+    regularization_lambda = context.regularization_lambda
 
     def f_and_g_params(theta_flat):
         params_new = jnp.asarray(theta_flat).reshape(params_shape)
         val, g = rothe_error_and_gradient(
-            params_new, params_old, coeffs_old, SHH2, t, dt, params_frozen, SHH2_oldold=SHH2_oldold
+            params_new,
+            params_old,
+            coeffs_old,
+            SHH2,
+            t,
+            dt,
+            params_frozen,
+            lambda_=regularization_lambda,
+            SHH2_oldold=SHH2_oldold,
         )
         val_float = float(val)
         grad_flat = np.asarray(jnp.ravel(g))
@@ -138,7 +148,7 @@ def compute_gtol(initial_err):
     """
     Stopping criterion for BFGS.
     """
-    return initial_err / 10
+    return initial_err / 100  #
 
 
 def maybe_apply_bb1_scaling(params_old, params_oldold, g_only_params, t, hess_inv_default):
@@ -170,22 +180,16 @@ def maybe_apply_bb1_scaling(params_old, params_oldold, g_only_params, t, hess_in
     num = float(s_vec @ s_vec)
 
     if not np.isfinite(denom) or not np.isfinite(num):
-        print(f"{t} does not fulfill curvature condition: denom={denom}, using default.")
-        return hess_inv_default
-
+        BB1 = 1e6
     if denom <= 0.0:
-        # Negative curvature: use |denom| to preserve scale while avoiding sign flip
-        denom_safe = max(abs(denom), 1e-14 * max(num, 1e-30))
-        print(f"{t} does not fulfill curvature condition: denom={denom}, using |denom|={denom_safe:.3e}.")
+        BB1 = 1e6
     else:
         denom_safe = denom
-
-    BB1 = num / denom_safe
+        BB1 = num / denom_safe
     if not np.isfinite(BB1) or BB1 <= 0.0:
-        print(f"{t} invalid BB1={BB1}, using default.")
-        return hess_inv_default
+        BB1 = 1e6
 
-    BB1_max = 1e8
+    BB1_max = 1e6
     if BB1 > BB1_max:
         print(f"{t} BB1={BB1:.3e} exceeds cap {BB1_max:.3e}, clamping.")
         BB1 = BB1_max

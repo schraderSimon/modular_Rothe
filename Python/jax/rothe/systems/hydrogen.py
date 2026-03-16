@@ -64,7 +64,13 @@ def make_hydrogen_squared_string(num_gauss_potential: int, num_gauss_fit: int) -
 
 
 def set_up_hydrogen_string_name(
-    external_field_params: ExternalFieldParams, ngp: int, ngwf: int, dt: complex, epsilon: float, num_dynamic: int
+    external_field_params: ExternalFieldParams,
+    ngp: int,
+    ngwf: int,
+    dt: complex,
+    epsilon: float,
+    regularization_lambda: float,
+    num_dynamic: int,
 ) -> str:
     """Build a descriptive filename stem for a hydrogen simulation run."""
     E0 = external_field_params.E0
@@ -81,7 +87,8 @@ def set_up_hydrogen_string_name(
         assert E0 == 0.0, "For imaginary time propagation, E0 must be zero."
     string_name = (
         f"hydrogen__E0={E0}__omega={omega}__N_T={N_T}__ng_pot={ngp}__ng_wf={ngwf}"
-        f"_dt={dt_string}__epsilon={float(epsilon):.3e}__num_dynamic={int(num_dynamic)}"
+        f"_dt={dt_string}__epsilon={float(epsilon):.3e}__lambda={float(regularization_lambda):.3e}"
+        f"__num_dynamic={int(num_dynamic)}"
     )
     return string_name
 

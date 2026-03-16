@@ -92,7 +92,7 @@ class ND_potentials:
         self.K_MAX = int(K_max)
         self.set_ket_and_bra_params(params_ket, params_bra)
         self.S = None
-        self.setUpIntermediates()
+        self._setup_intermediates()
 
     def set_ket_and_bra_params(self, params_ket, params_bra):
         self.params_ket = jnp.asarray(params_ket, dtype=dtype_real)
@@ -106,9 +106,8 @@ class ND_potentials:
         self.mu_bra = self.params_bra[:, :, 2]
         self.p_bra = self.params_bra[:, :, 3]
 
-    def setUpIntermediates(self):
+    def _setup_intermediates(self):
         self.S = None
-        # ai, aj = alpha_nD.conj()[:, None, :], alpha_nD[None, :, :]
         ai = (self.a_bra**2 + 1j * self.b_bra).conj()[:, None, :]
         aj = (self.a_ket**2 + 1j * self.b_ket)[None, :, :]
         self.Gamma = Gamma = ai + aj  # Shape: (n_bra, n_ket, D)
@@ -120,8 +119,8 @@ class ND_potentials:
         self.exponent_contrib = -(pi.conj() ** 2) / (4 * ai) - (pj**2) / (4 * aj)
         self.tilde_k = (ai * aj) / Gamma
         self.tilde_y = mui - muj
-        self.tysq = self.tilde_y**2
-        self.tksq = self.tilde_k**2
+        self.tilde_y_sq = self.tilde_y**2
+        self.tilde_k_sq = self.tilde_k**2
 
         self.P = (ai * mui + aj * muj) / Gamma
         self.R = 1 / (2 * Gamma)
@@ -131,7 +130,7 @@ class ND_potentials:
 
     def update_parameters(self, params_ket, params_bra):
         self.set_ket_and_bra_params(params_ket, params_bra)
-        self.setUpIntermediates()
+        self._setup_intermediates()
 
     def update_Kmax(self, K_max):
         """Optionally change K_max at runtime (rebuilds cached moments)."""
@@ -139,7 +138,7 @@ class ND_potentials:
         self.moments = self.calculate_all_moments(maximal_order=self.K_MAX)
 
     def calculate_S(self):
-        expo_core = jnp.sum(self.exponent_contrib - self.tysq * self.tilde_k, axis=-1)
+        expo_core = jnp.sum(self.exponent_contrib - self.tilde_y_sq * self.tilde_k, axis=-1)
         expo_pref = -0.5 * jnp.sum(jnp.log(self.Gamma), axis=-1)
         expo = expo_core + expo_pref
 
@@ -152,13 +151,17 @@ class ND_potentials:
 
     def calculate_T(self):
         S = self.S if self.S is not None else self.calculate_S()
-        T = S * jnp.sum(self.tilde_k - 2 * self.tksq * self.tysq, axis=-1)
+        T = S * jnp.sum(self.tilde_k - 2 * self.tilde_k_sq * self.tilde_y_sq, axis=-1)
         return T
 
     def calculate_Tsq(self):
         S = self.S if self.S is not None else self.calculate_S()
-        F = self.tilde_k - 2 * self.tksq * self.tysq
-        G = 4 * (self.tksq**2) * (self.tysq**2) - 12 * (self.tilde_k**3) * self.tysq + 3 * self.tksq
+        F = self.tilde_k - 2 * self.tilde_k_sq * self.tilde_y_sq
+        G = (
+            4 * (self.tilde_k_sq**2) * (self.tilde_y_sq**2)
+            - 12 * (self.tilde_k**3) * self.tilde_y_sq
+            + 3 * self.tilde_k_sq
+        )
         sumF = jnp.sum(F, axis=-1)
         sumF2 = jnp.sum(F**2, axis=-1)
         sumG = jnp.sum(G, axis=-1)
@@ -325,8 +328,8 @@ class generalPotentialSolver(ND_potentials):
         )
         _, self._moment2_idx_DM, _, _ = _make_moment_indices(self._poly2_keys)
 
-    def setUpIntermediates(self):
-        super().setUpIntermediates()
+    def _setup_intermediates(self):
+        super()._setup_intermediates()
         if self.polynomial is not None:
             self._build_cached_indices()
 
