@@ -19,13 +19,11 @@ From: ubuntu:24.04
     /opt/jaxenv/bin/pip install --upgrade pip
 
     # JAX with CUDA 12 (this should now give you 0.7.x + CUDA for Python 3.12)
-    /opt/jaxenv/bin/pip install --no-cache-dir \
-        "jax[cuda12]" \
-        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
+    /opt/jaxenv/bin/pip install --no-cache-dir "jax[cuda12]"
     # Extra stack
     /opt/jaxenv/bin/pip install --no-cache-dir \
         scipy \
         matplotlib \
         tqdm \
-        h5py
+        h5py \
+        sympy

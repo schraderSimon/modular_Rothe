@@ -17,13 +17,7 @@ from scipy.optimize import minimize
 import jax
 import jax.numpy as jnp
 from rothe.io import OutputConfig, _select_and_trim_to_time, load_rothe_file, save_rothe_state
-from rothe.objective import (
-    _log_det_penalty,
-    _overlap_penalty,
-    build_objective_context,
-    compute_SHH2_oldold,
-    setUpRotheErrorAndGradient_jit,
-)
+from rothe.objective import build_objective_context, compute_SHH2_oldold, setUpRotheErrorAndGradient_jit
 from rothe.optimization import (
     compute_gtol,
     compute_tanh_bounds,
@@ -31,7 +25,6 @@ from rothe.optimization import (
     make_objective_tanh,
     maybe_apply_bb1_scaling,
     tanh_forward,
-    tanh_inverse,
 )
 from rothe.wavefunction import generalPotentialSolver, propagate_kinetic_analytical
 
@@ -189,7 +182,7 @@ class RotheSolver:
         output_config=None,
         params_frozen=None,
         random_seed=0,
-        predictive_penalty_multiplier=0.1,
+        predictive_penalty_multiplier=1,
     ):
         self.SHH2 = SHH2
         self.dt = dt

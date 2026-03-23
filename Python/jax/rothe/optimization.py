@@ -27,7 +27,7 @@ class RotheObjectiveContext:
 # ---------------------------------------------------------------------------
 
 
-def compute_tanh_bounds(params_init_flat, params_shape, p=0.5, q=0.1, a_min=1e-6):
+def compute_tanh_bounds(params_init_flat, params_shape, p=0.1, q=0.01, a_min=1e-4):
     """Compute element-wise (lb, ub) from the initial parameter vector.
 
     lb_j = init_j - p * |init_j| - q
@@ -178,18 +178,18 @@ def maybe_apply_bb1_scaling(params_old, params_oldold, g_only_params, t, hess_in
 
     denom = float(s_vec @ y_vec)
     num = float(s_vec @ s_vec)
-
+    BB_def = 1e8
     if not np.isfinite(denom) or not np.isfinite(num):
-        BB1 = 1e6
+        BB1 = BB_def
     if denom <= 0.0:
-        BB1 = 1e6
+        BB1 = BB_def
     else:
         denom_safe = denom
         BB1 = num / denom_safe
     if not np.isfinite(BB1) or BB1 <= 0.0:
-        BB1 = 1e6
+        BB1 = BB_def
 
-    BB1_max = 1e6
+    BB1_max = BB_def
     if BB1 > BB1_max:
         print(f"{t} BB1={BB1:.3e} exceeds cap {BB1_max:.3e}, clamping.")
         BB1 = BB1_max

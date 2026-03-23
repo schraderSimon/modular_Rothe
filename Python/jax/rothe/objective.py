@@ -47,10 +47,9 @@ def _log_det_penalty(S_new_full, multiplier=100):
     and frozen).  As the basis approaches linear dependence, det(S) -> 0 and
     the penalty diverges to +inf, pushing parameters apart.
     """
-    S_herm = 0.5 * (S_new_full + jnp.conj(S_new_full).T)
-    eigvals = jnp.real(jnp.linalg.eigvalsh(S_herm))
-    eigvals_clipped = jnp.clip(eigvals, 1e-14, jnp.inf)
-    return -jnp.mean(jnp.log(eigvals_clipped)) / multiplier
+    sign, det = jnp.linalg.slogdet(S_new_full)
+    det_div = det / S_new_full.shape[0]
+    return -det_div / multiplier
 
 
 def _fixed_basis_prediction_penalty(A_dagger_A, S_new_full, H_new_full, H2_new_full, coeffs_old, lambda_, dt):
@@ -230,13 +229,14 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         if not return_cnew:
             S_dyn_dyn, S_dyn_frozen, S_new_full = penalty_mats
             S_pred_full, H_pred_full, H2_pred_full = prediction_mats
-            multiplier = 0.1
+            multiplier = 0.01
             penalty = (
                 multiplier * jnp.abs(overlap_penalty_scale) * _overlap_penalty(S_dyn_dyn, S_dyn_frozen, center=0.97**2)
             )
-            penalty = penalty + jnp.abs(predictive_penalty_scale) * _fixed_basis_prediction_penalty(
-                A_dagger_A, S_pred_full, H_pred_full, H2_pred_full, coeffs_new, lambda_, dt
-            )
+            # penalty += jnp.abs(predictive_penalty_scale) * _fixed_basis_prediction_penalty(
+            #    A_dagger_A, S_pred_full, H_pred_full, H2_pred_full, coeffs_new, lambda_, dt
+            # )
+            # penalty += jnp.abs(overlap_penalty_scale) * _log_det_penalty(S_new_full)
             rothe_error_val = rothe_error_val + penalty
 
         if return_cnew:
