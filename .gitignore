@@ -43,3 +43,4 @@
 #Data
 *.h5
 *.pyc
+*.err
