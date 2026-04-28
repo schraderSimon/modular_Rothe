@@ -18,18 +18,63 @@ from rothe.io import load_rothe_file
 OLD_DATA_DIR = Path(__file__).parent.parent / "old_data"
 
 
-def parse_sim_name(raw: str) -> str:
-    """Strip a file extension token appended by double-underscore, if present."""
-    parts = raw.split("__")
-    if parts and "=" not in parts[-1]:
-        return "__".join(parts[:-1])
-    return raw
+def parse_sim_input(raw: str) -> tuple[str, str, Path | None]:
+    """Return (sim_name, splitting_type, path_override) from a CLI input token.
+
+    Accepts any of:
+    - plain sim name: ``hydrogen__...__num_dynamic=10``
+    - sim name with explicit splitting token: ``hydrogen__...__num_dynamic=10__none``
+    - full/relative HDF5 path: ``wave_function_data/hydrogen__...__num_dynamic=10__none.h5``
+    """
+    token_path = Path(raw)
+    token = raw
+    path_override = None
+
+    if token_path.suffix == ".h5":
+        token = token_path.stem
+        if token_path.parent != Path("."):
+            path_override = token_path.parent
+    elif token_path.parent != Path("."):
+        token = token_path.name
+        path_override = token_path.parent
+
+    parts = token.split("__")
+    if len(parts) >= 2 and "=" not in parts[-1]:
+        splitting_type = parts[-1]
+        sim_name = "__".join(parts[:-1])
+    else:
+        splitting_type = "none"
+        sim_name = token
+
+    return sim_name, splitting_type, path_override
 
 
 def parse_E0_from_sim_name(sim_name: str) -> float | None:
     """Extract E0 from a new-format sim name, e.g. 'hydrogen__E0=0.06__...'."""
     m = re.search(r"E0=([0-9.]+)", sim_name)
     return float(m.group(1)) if m else None
+
+
+def _extract_param(sim_name: str, key: str) -> str | None:
+    """Extract a single key=value token from a double-underscore simulation name."""
+    m = re.search(rf"(?:^|__){re.escape(key)}=([^_]+)(?:__|$)", sim_name)
+    return m.group(1) if m else None
+
+
+def make_plot_label(sim_name: str) -> str:
+    """Compact label: only Gaussian count and epsilon."""
+    n_gauss = _extract_param(sim_name, "ng_wf")
+    if n_gauss is None:
+        n_gauss = _extract_param(sim_name, "num_dynamic")
+    eps = _extract_param(sim_name, "epsilon")
+
+    pieces = []
+    if n_gauss is not None:
+        pieces.append(f"N={n_gauss}")
+    if eps is not None:
+        pieces.append(f"ε={eps}")
+
+    return ", ".join(pieces) if pieces else sim_name
 
 
 def find_ref_file(E0: float, old_data_dir: Path) -> tuple[Path, float] | None:
@@ -98,12 +143,16 @@ def main():
     plotted_ref_E0s: set[float] = set()
 
     for raw_name in args.sim_names:
-        sim_name = parse_sim_name(raw_name)
+        sim_name, splitting_type, path_override = parse_sim_input(raw_name)
+        plot_label = make_plot_label(sim_name)
 
         try:
-            data = load_rothe_file(sim_name, "none")
+            data = load_rothe_file(sim_name, splitting_type, path=str(path_override) if path_override else None)
         except FileNotFoundError:
-            print(f"Error: Could not find data for {sim_name!r} — skipping.")
+            print(
+                f"Error: Could not find data for input {raw_name!r} "
+                f"(resolved to sim_name={sim_name!r}, splitting={splitting_type!r}) — skipping."
+            )
             continue
 
         times = data["t"]
@@ -141,7 +190,7 @@ def main():
         times_plot = times_plot[:n]
         dz = dz[:n]
 
-        ax_dip.plot(times_plot, dz, label=sim_name)
+        ax_dip.plot(times_plot, dz, label=plot_label)
 
         # HHG spectrum — drop NaN entries (initial t=0 state has no dipole)
         valid = np.isfinite(dz)
@@ -152,7 +201,7 @@ def main():
         # Keep only positive frequencies; rescale to harmonic order n = ω/ω₀
         pos = omega > 0
         harmonic_order = omega[pos] / args.omega0
-        ax_hhg.semilogy(harmonic_order, omega[pos] ** 2 * spec[pos], label=sim_name)
+        ax_hhg.semilogy(harmonic_order, omega[pos] ** 2 * spec[pos], label=plot_label)
 
         # Optionally overlay the lowest-epsilon reference from old_data
         if args.plot_ref and OLD_DATA_DIR.exists():
@@ -183,14 +232,16 @@ def main():
     ax_dip.set_xlabel(time_label)
     ax_dip.set_ylabel("Dipole moment $d_z$")
     ax_dip.set_title("z-component of dipole moment")
-    ax_dip.legend()
+    if ax_dip.lines:
+        ax_dip.legend()
     ax_dip.grid(True, alpha=0.3)
 
     ax_hhg.set_xlabel(r"Harmonic order $n = \omega/\omega_0$")
     ax_hhg.set_ylabel(r"$\omega^2 |d(\omega)|^2$ (arb. units)")
     ax_hhg.set_title(f"HHG spectrum (velocity form, $\\omega_0={args.omega0}$ a.u.)")
     ax_hhg.set_xlim(1, 50)
-    ax_hhg.legend()
+    if ax_hhg.lines:
+        ax_hhg.legend()
     ax_hhg.grid(True, alpha=0.3, which="both")
 
     plt.tight_layout()

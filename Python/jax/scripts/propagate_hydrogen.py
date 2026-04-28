@@ -20,7 +20,7 @@ from rothe.systems.hydrogen import (
 )
 
 
-def make_dynamic_params(n_per_side=10, width=1 / np.sqrt(2), D=4, z_spacing=0.5):
+def make_dynamic_params(n_per_side=10, width=1 / np.sqrt(2), D=3, z_spacing=0.3):
     """Create 2*n_per_side Gaussians placed symmetrically along the z-axis."""
     n_total = 2 * n_per_side
     params = jnp.zeros((n_total, D, 4), dtype=jnp.float64)
@@ -46,7 +46,7 @@ def parse_args():
         help="Rothe splitting mode to benchmark",
     )
     parser.add_argument("--epsilon", type=float, required=True)
-    parser.add_argument("--regularization_lambda", type=float, default=1e-10, help="Tikhonov regularization strength")
+    parser.add_argument("--regularization_lambda", type=float, required=True, help="Tikhonov regularization strength")
     parser.add_argument("--random_seed", type=int, default=0, help="RNG seed for Gaussian sampling")
     parser.add_argument("--maxiter", type=int, default=50)
     parser.add_argument("--num_dynamic", type=int, default=10, help="Number of dynamic Gaussians per side")
@@ -68,6 +68,12 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Freeze ground-state Gaussians (default: True). " "Use --no-frozen to make all Gaussians optimizable.",
+    )
+    parser.add_argument(
+        "--remove_overlapping_gaussians",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Remove one dynamic Gaussian if its overlap with a frozen Gaussian exceeds 0.99, then re-optimize.",
     )
     return parser.parse_args()
 
@@ -167,6 +173,7 @@ def main():
         splitting_type=splitting_type,
         output_config=OutputConfig(name=string_name, polynomial_string=hydrogen_string, epsilon=epsilon),
         params_frozen=params_frozen_solver,
+        remove_overlapping_gaussians=args.remove_overlapping_gaussians,
     )
     nsteps_total = nsteps
     nsteps = resume_or_initialize_rothe(

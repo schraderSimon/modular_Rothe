@@ -26,13 +26,16 @@ class ExternalFieldParams:
 
 
 def set_up_SHH2(potential_string, D, squared_string=None):
-    """Build the SHH2 function for a given potential.
-    Input:
-    - potential_string: string specifying the potential
-    - D: spatial dimension
-    - squared_string: string specifying the squared potential (optional)
+    """Build the SHH2 closure for a given potential.
+
+    Args:
+        potential_string: Potential definition string.
+        D: Spatial dimension.
+        squared_string: Optional squared-potential definition.
+
     Returns:
-        SHH2: function(t, params_ket, params_bra, splitting_type) -> (S, H, H2)
+        Callable with signature
+        ``SHH2(t, params_ket, params_bra, splitting_type='none') -> (S, H, H2)``.
     """
     params_dummy = jnp.ones((1, D, 4))
     system = generalPotentialSolver(params_dummy, params_dummy, potential_string, squared_string=squared_string)

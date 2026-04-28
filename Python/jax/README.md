@@ -1,88 +1,129 @@
 # modular_Rothe (JAX)
 
-This folder contains a JAX + SciPy implementation of a **Gaussian-basis Rothe time-stepping method** for the time-dependent Schrödinger equation (TDSE).
+JAX + SciPy implementation of Gaussian-basis Rothe time stepping for the time-dependent Schrodinger equation (TDSE).
 
-At a high level:
-- The wavefunction is represented in a (generally non-orthogonal) Gaussian basis.
-- Given basis parameters `p` and coefficients `c` at time `t`, the Rothe step solves an implicit condition for the next basis parameters `p_new` and coefficients `c_new` at `t+dt`.
-- Results are optionally written incrementally to a single HDF5 file per run.
+The solver represents the wavefunction in a generally non-orthogonal Gaussian basis and advances one implicit Rothe step at a time:
 
-## What it can do
+- nonlinear update of Gaussian parameters,
+- linear coefficient solve in the updated basis,
+- optional HDF5 checkpointing for resume and analysis.
 
-- Build overlap and Hamiltonian matrices for Gaussian bases in 1D (`HOscillator_1d.py`) and in ND for **polynomial potentials** specified by a string (`general_wf.py`).
-- Advance a TDSE solution via the Rothe method (`jax_Rothe.py`) using SciPy BFGS and JAX gradients.
-- Optionally use a simple splitting mode (`splitting_type="kinetic"`) that applies an **analytic kinetic half-step** (`propagate_kinetic_analytical`) and treats the remaining implicit solve as potential-only.
-- Persist and resume simulations using HDF5 append-only logs (`file_handling.py`).
+## Current capabilities
 
-## What it cannot (currently) do
+- Core solver in `rothe/solver.py` with optional frozen basis functions.
+- JIT objective and gradient construction in `rothe/objective.py`.
+- Shared block-matrix assembly helpers in `rothe/block_assembly.py`.
+- Shared regularized linear solve/scoring helpers in `rothe/linear_solve.py`.
+- HDF5 append-only per-step persistence in `rothe/io.py`.
+- System helpers for Hydrogen, Henon-Heiles, and Double Well examples under `rothe/systems/` and `scripts/`.
 
-- No packaged CLI/API: entrypoints are the scripts `henonHeiles_2D.py` / `henonheiles_nD.py` (and the demo in `general_wf.py`).
-- No robust test suite runner: `test_HOscillator_1D.py` is a lightweight self-check script (works as `python test_HOscillator_1D.py`).
-- The “dense metric / approximate Hessian scaling” path in `jax_Rothe.py` is marked **TEMPORARY** (`hessian_cholesky` returns identity), so it does not currently provide real preconditioning.
-- No explicit units/physical constants: interpretation of parameters and polynomial coefficients is up to the caller.
+## Installation
 
-## Files (mental map)
+From this directory:
 
-- `jax_Rothe.py`
-  - `RotheSolver`: main time stepper (implicit step solved by SciPy BFGS)
-  - `setUpRotheErrorAndGradient_jit`: builds the Rothe objective and JAX gradient
-- `general_wf.py`
-  - `ND_potentials`: Gaussian-basis intermediates + moment cache
-  - `generalPotentialSolver`: polynomial potential model from a string DSL
-  - `propagate_kinetic_analytical`: exact free-particle propagation for a Gaussian basis
-- `file_handling.py`
-  - `save_rothe_state`: append time step data to HDF5
-  - `load_rothe_file`: read HDF5 into numpy arrays
-  - `_select_and_trim_to_time`: resume/truncate helper
-- `henonHeiles_2D.py`, `henonheiles_nD.py`
-  - Example runners for polynomial potentials (Henon–Heiles-like examples)
-- `HOscillator_1d.py`
-  - 1D harmonic oscillator overlap/H/H^2 builders + ground state helpers
-- `read_string.py`
-  - Parses the polynomial DSL into a mapping `{multi_index_tuple: coefficient}`
+```bash
+pip install -e .
+```
 
-## Key data structures
+For tests and plotting extras:
 
-- Gaussian parameters `p`
-  - **ND**: `p.shape == (n, D, 4)` with per-dimension ordering `(a, b, mu, p)`.
-  - **1D**: `params.shape == (n, 4)` with ordering `(a, b, mu, p)`.
-- Coefficients `c`
-  - `c.shape == (n,)` complex.
+```bash
+pip install -e ".[test,plot]"
+```
+
+Note: `pyproject.toml` currently lists `jax[cuda12]`. If you run on CPU-only machines, install the JAX variant that matches your platform before running examples.
+
+## Quick start
+
+All propagators require an explicit regularization strength via `--regularization_lambda`.
+
+### Hydrogen
+
+Installed console entry point:
+
+```bash
+propagate-hydrogen \
+  --num_gauss_wavefunction 21 \
+  --num_gauss_potential 21 \
+  --epsilon 1e-2 \
+  --regularization_lambda 1e-8
+```
+
+Useful options:
+
+- `--splitting_type {none,kinetic}`
+- `--dt 0.2` (real-time) or `--dt 0.2j` (imaginary-time)
+- `--frozen` / `--no-frozen`
+- `--num_dynamic 10`
+- `--t_start <time>` to resume from an existing file
+
+### Henon-Heiles
+
+Installed console entry point:
+
+```bash
+propagate-henon-heiles \
+  --dim 2 \
+  --dt 0.01 \
+  --num_gaussians 5 \
+  --epsilon 1e-3 \
+  --regularization_lambda 1e-8
+```
+
+### 1D Double Well
+
+Module runner (no console entry point in `pyproject.toml`):
+
+```bash
+python -m scripts.propagate_double_well \
+  --num_gaussians 3 \
+  --epsilon 1e-3 \
+  --regularization_lambda 1e-8
+```
 
 ## HDF5 output format
 
-Saved by `file_handling.save_rothe_state(sim_name, splitting_type, ...)` into:
+Saved by `rothe.io.save_rothe_state` to:
 
-- File name: `wave_function_data/{sim_name}__{splitting_type}.h5` (unless `out_dir` is changed)
-- Root attributes: `sim_name`, `splitting_type`, `dt`, `created`, `p_dtype`, `c_dtype`
-- Dataset: `polynomial_string` (scalar UTF-8)
-- Group: `data/`
-  - `data/p`: shape `(steps, n, D, 4)`
-  - `data/c`: shape `(steps, n)`
-  - `data/t`: shape `(steps,)`
-  - `data/rothe_error`: shape `(steps,)`
+- `wave_function_data/{sim_name}__{splitting_type}.h5` by default.
 
-## How to run
+File-level layout:
 
-These scripts assume you are using a Python environment that already has `jax`, `jaxlib`, `numpy`, `scipy`, and `h5py`.
+- root attrs: `sim_name`, `splitting_type`, `dt`, `epsilon`, `regularization_lambda`, `created`
+- scalar dataset: `polynomial_string`
+- group: `steps/`
+  - `steps/0000/`, `steps/0001/`, ...
+  - each step stores exact-shape arrays for that time point:
+    - `params` with shape `(n_total, D, 4)`
+    - `coeffs` with shape `(n_total,)`
+  - step attrs include `t`, `rothe_error`, `n_dynamic`
+  - optional step data: `rng_state` (attr), `dipole` (dataset), `double_autocorrelation` (attr)
 
-Run the 1D sanity check:
+This schema allows variable Gaussian counts across time steps without padding.
+
+## Repository map
+
+- `rothe/solver.py`: high-level `RotheSolver`, optimization loop, candidate augmentation.
+- `rothe/objective.py`: Rothe objective assembly, value/gradient factories.
+- `rothe/block_assembly.py`: shared formulas for A, rho, B and block layouts.
+- `rothe/linear_solve.py`: shared regularized linear solves (JAX and NumPy paths).
+- `rothe/optimization.py`: objective wrappers, parameter transforms, optimizer helpers.
+- `rothe/io.py`: checkpoint save/load/resume-trim helpers.
+- `rothe/wavefunction.py`: Gaussian overlap/H/H2 construction and propagation helpers.
+- `rothe/systems/`: problem-specific setup utilities.
+- `scripts/`: runnable propagation entry points.
+- `tests/`: pytest suite.
+
+## Testing
+
+Run from repository root:
 
 ```bash
-cd /home/simon/projects/modular_Rothe/Python/jax
-python test_HOscillator_1D.py
+pytest
 ```
 
-Run a polynomial-potential example (optional `splitting_type` argument):
+## Notes and limitations
 
-```bash
-cd /home/simon/projects/modular_Rothe/Python/jax
-python henonheiles_nD.py none
-# or
-python henonheiles_nD.py kinetic
-```
-
-## Notes / assumptions
-
-- Many modules set `XLA_FLAGS` at import time to enable Triton GEMM and autotuning. If you manage XLA flags elsewhere (module system, job scripts), you may want to remove/centralize those assignments.
-- Because SciPy optimization runs on the host and JAX traces on first use, the first step can include noticeable compilation overhead.
+- First call overhead can be noticeable due to JAX compilation.
+- SciPy optimization is host-side; performance depends on objective/gradient call cost and basis size.
+- Physical units/conventions are controlled by the chosen potential strings and system setup.

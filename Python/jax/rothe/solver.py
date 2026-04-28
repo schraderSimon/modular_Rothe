@@ -10,20 +10,24 @@ import os
 import time
 from dataclasses import dataclass
 from functools import partial
+from typing import cast
 
 import numpy as np
 from scipy.optimize import minimize
 
 import jax
 import jax.numpy as jnp
+from rothe.block_assembly import make_A_block, make_B_block, make_rho_block, shh2_triplets, split_oldold_frozen_triplets
 from rothe.io import OutputConfig, _select_and_trim_to_time, load_rothe_file, save_rothe_state
+from rothe.linear_solve import solve_and_score_numpy
 from rothe.objective import build_objective_context, compute_SHH2_oldold, setUpRotheErrorAndGradient_jit
 from rothe.optimization import (
+    compute_bb1_inverse_hessian_scale,
     compute_gtol,
     compute_tanh_bounds,
     make_objective_params,
     make_objective_tanh,
-    maybe_apply_bb1_scaling,
+    make_scaled_identity,
     tanh_forward,
 )
 from rothe.wavefunction import generalPotentialSolver, propagate_kinetic_analytical
@@ -31,7 +35,7 @@ from rothe.wavefunction import generalPotentialSolver, propagate_kinetic_analyti
 __all__ = ["RotheSolver", "setUpRotheErrorAndGradient_jit", "save_rothe_state", "OutputConfig"]
 
 
-_CANDIDATE_OVERLAP_DISCARD_THRESHOLD = 0.99
+_OVERLAP_THRESHOLD = 0.99
 
 
 @partial(jax.jit, static_argnames=("SHH2", "splitting_eff", "has_frozen"))
@@ -61,43 +65,48 @@ def _augment_blocks_with_candidate(
     new dynamic-dynamic overlap matrix (including the candidate) and S_of_aug
     is the new dynamic-frozen overlap (shape (0,0) when has_frozen is False).
     """
-    S_cc, H_cc, H2_cc = SHH2(
-        t=t_mid, params_ket=candidate_param, params_bra=candidate_param, splitting_type=splitting_eff
+    (S_cc, H_cc, H2_cc), (S_cd, H_cd, H2_cd), (S_dc, H_dc, H2_dc), (S_xc, H_xc, H2_xc) = shh2_triplets(
+        SHH2,
+        t_mid,
+        splitting_eff,
+        (
+            (candidate_param, candidate_param),
+            (params_new_base, candidate_param),
+            (candidate_param, params_new_base),
+            (candidate_param, params_old),
+        ),
     )
-    A_cc = S_cc + dt_abs_sq_4 * H2_cc - dt_imag * H_cc
-
-    S_cd, H_cd, H2_cd = SHH2(
-        t=t_mid, params_ket=params_new_base, params_bra=candidate_param, splitting_type=splitting_eff
-    )
-    A_cd = S_cd + dt_abs_sq_4 * H2_cd - dt_imag * H_cd
-
-    S_dc, H_dc, H2_dc = SHH2(
-        t=t_mid, params_ket=candidate_param, params_bra=params_new_base, splitting_type=splitting_eff
-    )
-    A_dc = S_dc + dt_abs_sq_4 * H2_dc - dt_imag * H_dc
-
-    S_xc, H_xc, H2_xc = SHH2(t=t_mid, params_ket=candidate_param, params_bra=params_old, splitting_type=splitting_eff)
-    rho_xc = S_xc - dt_abs_sq_4 * H2_xc - 1j * dt_real * H_xc
+    A_cc = make_A_block(S_cc, H_cc, H2_cc, dt_abs_sq_4, dt_imag)
+    A_cd = make_A_block(S_cd, H_cd, H2_cd, dt_abs_sq_4, dt_imag)
+    A_dc = make_A_block(S_dc, H_dc, H2_dc, dt_abs_sq_4, dt_imag)
+    rho_xc = make_rho_block(S_xc, H_xc, H2_xc, dt_abs_sq_4, dt_real)
 
     if not has_frozen:
+        if S_base is None:
+            raise ValueError("S_base must be provided when has_frozen is False.")
+        S_base = cast(jnp.ndarray, S_base)
         A_aug = jnp.block([[A_base, A_dc], [A_cd, A_cc]])
         rho_aug = jnp.concatenate([rho_base, rho_xc], axis=1)
         S_dyn_aug = jnp.block([[S_base, S_dc], [S_cd, S_cc]])
         S_of_aug = jnp.zeros((0, 0), dtype=S_dyn_aug.dtype)
     else:
+        if any(v is None for v in (params_frozen, A_df, A_ff, rho_xf, S_base, S_df)):
+            raise ValueError("Frozen-block inputs must all be provided when has_frozen is True.")
+        params_frozen = cast(jnp.ndarray, params_frozen)
+        A_df = cast(jnp.ndarray, A_df)
+        A_ff = cast(jnp.ndarray, A_ff)
+        rho_xf = cast(jnp.ndarray, rho_xf)
+        S_base = cast(jnp.ndarray, S_base)
+        S_df = cast(jnp.ndarray, S_df)
         n_dyn = params_new_base.shape[0]
         A_dd = A_base[:n_dyn, :n_dyn]
         rho_xd = rho_base[:, :n_dyn]
 
-        S_cf, H_cf, H2_cf = SHH2(
-            t=t_mid, params_ket=params_frozen, params_bra=candidate_param, splitting_type=splitting_eff
+        (S_cf, H_cf, H2_cf), (S_fc, H_fc, H2_fc) = shh2_triplets(
+            SHH2, t_mid, splitting_eff, ((params_frozen, candidate_param), (candidate_param, params_frozen))
         )
-        A_cf = S_cf + dt_abs_sq_4 * H2_cf - dt_imag * H_cf
-
-        S_fc, H_fc, H2_fc = SHH2(
-            t=t_mid, params_ket=candidate_param, params_bra=params_frozen, splitting_type=splitting_eff
-        )
-        A_fc = S_fc + dt_abs_sq_4 * H2_fc - dt_imag * H_fc
+        A_cf = make_A_block(S_cf, H_cf, H2_cf, dt_abs_sq_4, dt_imag)
+        A_fc = make_A_block(S_fc, H_fc, H2_fc, dt_abs_sq_4, dt_imag)
 
         A_aug = jnp.block([[A_dd, A_dc, A_df], [A_cd, A_cc, A_cf], [jnp.conj(A_df).T, A_fc, A_ff]])
         rho_aug = jnp.concatenate([rho_xd, rho_xc, rho_xf], axis=1)
@@ -148,10 +157,11 @@ class RotheSolver:
     Rothe solver for the TDSE in a Gaussian basis.
 
     You provide:
-        - ``SHH2(t, params, splitting_type) -> (S, H, H2)`` where
-          S, H, H2 are (N,N) matrices in the Gaussian basis.
-                - ``rothe_grad_fn``: function returning (value, grad) w.r.t. p_new.
-                    It can be JAX-based, NumPy-based, or any callable with matching signature.
+                - ``SHH2(t, params_ket, params_bra, splitting_type) -> (S, H, H2)``
+                    where S, H, H2 are ``(N, N)`` matrices in the Gaussian basis.
+                - ``rothe_grad_fn``: function returning ``(value, grad)`` w.r.t. the
+                    new dynamic parameters. It can be JAX-based, NumPy-based, or any
+                    callable with matching signature.
         - ``rothe_nograd``: a non-grad version (used to compute c_new).
 
     State:
@@ -183,6 +193,7 @@ class RotheSolver:
         params_frozen=None,
         random_seed=0,
         predictive_penalty_multiplier=1,
+        remove_overlapping_gaussians=False,
     ):
         self.SHH2 = SHH2
         self.dt = dt
@@ -203,6 +214,7 @@ class RotheSolver:
         self.params_frozen = jnp.asarray(params_frozen) if params_frozen is not None else None
         self.cumulative_rothe_error = 0.0
         self.previous_step_rothe_error = None
+        self.remove_overlapping_gaussians = bool(remove_overlapping_gaussians)
         self.gaussian_addition_cooldown_steps = 10
         self._gaussian_addition_cooldown_remaining = 0
 
@@ -216,6 +228,14 @@ class RotheSolver:
             )
         else:
             self._dipole_solver = None
+
+    @property
+    def n_frozen(self) -> int:
+        return self.params_frozen.shape[0] if self.params_frozen is not None else 0
+
+    @property
+    def n_dynamic(self) -> int:
+        return self.params_old.shape[0] - self.n_frozen
 
     def _eval_rothe_nograd(self, params_new, return_cnew=False, SHH2_oldold=None):
         if self.rothe_nograd is None:
@@ -234,17 +254,10 @@ class RotheSolver:
         )
 
     def _prepare_timestep_optimization_inputs(self, params_init):
-        n_frozen = self.params_frozen.shape[0] if self.params_frozen is not None else 0
-        n_dynamic = self.params_old.shape[0] - n_frozen
-        params_dynamic = self.params_old[:n_dynamic]
-
         if params_init is None:
-            params_init = np.asarray(params_dynamic)
+            params_init = np.asarray(self.params_old[: self.n_dynamic])
         params_init = np.asarray(params_init)
-
-        params_shape = params_init.shape
-        x0_params_flat = params_init.ravel()
-        return n_dynamic, params_shape, x0_params_flat
+        return params_init.shape, params_init.ravel()
 
     def _build_parameter_optimization_problem(
         self, x0_params_flat, params_shape, objective_context, tanh_p=0.5, tanh_q=0.1
@@ -278,18 +291,17 @@ class RotheSolver:
         # Initial point in transformed space is always 0.
         x0_prime = np.zeros_like(x0_params_flat)
 
-        N = x0_params_flat.size
         # Scale-invariant default inverse-Hessian seed for BFGS.
         grad_norm = float(np.linalg.norm(initial_grad_params_flat))
         if not np.isfinite(grad_norm) or grad_norm <= 0.0:
             hess_scale = 1.0
         else:
             hess_scale = 1.0 / grad_norm
-        hess_inv_default = hess_scale * np.eye(N)
-        return (f_and_g_tanh, g_only_params, x0_prime, lb, ub, hess_inv_default, gtol)
+        objective_scale = 1.0 / max(abs(float(initial_err)), 1e-30)
+        return (f_and_g_tanh, g_only_params, x0_prime, lb, ub, hess_scale, gtol, objective_scale)
 
     def find_next_timestep_solution(self, params_init=None, maxiter=100, given_gtol=None):
-        n_dynamic, params_shape, x0_params_flat = self._prepare_timestep_optimization_inputs(params_init)
+        params_shape, x0_params_flat = self._prepare_timestep_optimization_inputs(params_init)
         objective_context = build_objective_context(
             self.SHH2,
             self.params_old,
@@ -300,40 +312,85 @@ class RotheSolver:
             self.params_frozen,
             self.regularization_lambda,
         )
-        f_and_g_tanh, g_only_params, x0_prime, lb, ub, hess_inv_default, gtol = (
+        f_and_g_tanh, g_only_params, x0_prime, lb, ub, hess_scale, gtol, objective_scale = (
             self._build_parameter_optimization_problem(x0_params_flat, params_shape, objective_context)
         )
         if given_gtol is not None:
             gtol = given_gtol
-        params_dynamic = self.params_old[:n_dynamic]
-        # Skip BB1 if params_init has more Gaussians than params_old (Gaussian was just added),
-        # or if params_oldold has a different dynamic count (Gaussian added at previous step).
-        n_init = params_shape[0]
-        if self.params_oldold is not None and n_init == n_dynamic and self.params_oldold.shape[0] == n_dynamic:
-            params_dynamic_prev = self.params_oldold
-        else:
-            params_dynamic_prev = None
-        hess_inv0 = maybe_apply_bb1_scaling(
-            params_old=params_dynamic,
-            params_oldold=params_dynamic_prev,
-            g_only_params=g_only_params,
-            t=self.t,
-            hess_inv_default=hess_inv_default,
+
+        def _positive_or(value, fallback):
+            value = float(value)
+            if np.isfinite(value) and value > 0.0:
+                return value
+            return float(fallback)
+
+        n_parameters = x0_params_flat.size
+        use_lbfgsb = n_parameters > 10  # Use BFGS for very small problems, L-BFGS-B for rest
+
+        params_dynamic = self.params_old[: self.n_dynamic]
+        # Skip BB1 when dynamic sizes are incompatible (typically after adding a Gaussian).
+        has_bb1_history = (
+            self.params_oldold is not None
+            and params_shape[0] == self.n_dynamic
+            and self.params_oldold.shape[0] == self.n_dynamic
+        )
+        params_dynamic_prev = self.params_oldold if has_bb1_history else None
+
+        default_hess_inv_scale = _positive_or(hess_scale, 1.0)
+
+        # Build a BB1 scalar inverse-Hessian seed once, then use it in both
+        # BFGS (as hess_inv0 = scale * I) and L-BFGS-B (via objective scaling).
+        hess_inv_scale = _positive_or(
+            compute_bb1_inverse_hessian_scale(
+                params_old=params_dynamic,
+                params_oldold=params_dynamic_prev,
+                g_only_params=g_only_params,
+                default_scale=default_hess_inv_scale,
+                max_scale=1e8,
+                t=self.t,
+            ),
+            default_hess_inv_scale,
         )
 
         if maxiter == 0:
             niter = -1
             alpha_prime_solved = x0_prime
         else:
-            solution = minimize(
-                f_and_g_tanh,
-                x0_prime,
-                jac=True,
-                method="BFGS",
-                options={"gtol": gtol, "maxiter": maxiter, "disp": False, "hess_inv0": hess_inv0},
-            )
+            if use_lbfgsb:
+                print("Using L-BFGS-B")
+                # L-BFGS-B uses an identity inverse-Hessian seed internally.
+                # Precondition variables with alpha' = c * z so the effective
+                # initial inverse-Hessian in alpha'-space is c^2 * I.
+                lbfgsb_precond = _positive_or(np.sqrt(hess_inv_scale), 1.0)
+
+                def f_and_g_tanh_preconditioned(z):
+                    alpha_prime = lbfgsb_precond * np.asarray(z)
+                    val, grad_alpha_prime = f_and_g_tanh(alpha_prime)
+                    grad_z = lbfgsb_precond * np.asarray(grad_alpha_prime)
+                    # Normalize objective magnitude to ~O(1) at start so
+                    # initial step behavior is scale-invariant.
+                    return objective_scale * float(val), objective_scale * grad_z
+
+                x0_lbfgsb = x0_prime / lbfgsb_precond
+                objective_fn = f_and_g_tanh_preconditioned
+                method = "L-BFGS-B"
+                options = {"gtol": gtol, "ftol": 1e-16, "maxiter": maxiter, "maxcor": 20}
+            else:
+                print("Using BFGS")
+                objective_fn = f_and_g_tanh
+                method = "BFGS"
+                options = {
+                    "gtol": gtol,
+                    "maxiter": maxiter,
+                    "disp": False,
+                    "hess_inv0": make_scaled_identity(hess_inv_scale, n_parameters),
+                }
+
+            x0_optim = x0_lbfgsb if use_lbfgsb else x0_prime
+            solution = minimize(objective_fn, x0_optim, jac=True, method=method, options=options)
+
             niter = solution.nit
-            alpha_prime_solved = solution.x
+            alpha_prime_solved = lbfgsb_precond * solution.x if use_lbfgsb else solution.x
 
         params_solved_flat = tanh_forward(alpha_prime_solved, lb, ub)
         params_solved = params_solved_flat.reshape(params_shape)
@@ -364,10 +421,8 @@ class RotheSolver:
         if coeffs_init is not None:
             self.coeffs_old = jnp.asarray(coeffs_init)
 
-        n_frozen = self.params_frozen.shape[0] if self.params_frozen is not None else 0
-        n_dynamic = self.params_old.shape[0] - n_frozen
         D = int(self.params_old.shape[1])
-        return StepContext(n_frozen=n_frozen, n_dynamic=n_dynamic, ones_D=jnp.ones(D))
+        return StepContext(n_frozen=self.n_frozen, n_dynamic=self.n_dynamic, ones_D=jnp.ones(D))
 
     def build_startguess(self, step_context):
         params_dynamic = np.asarray(self.params_old[: step_context.n_dynamic])
@@ -417,46 +472,10 @@ class RotheSolver:
     def solve_step_none(self, startguess, maxiter=100):
         params_solved, coeffs_new, final_RE, nit = self.find_next_timestep_solution(startguess, maxiter=maxiter)
         return StepResult(
-            params_solved=params_solved, coeffs_new=coeffs_new, rothe_error=float(final_RE), n_iterations=nit
-        )
-
-    def solve_step_kinetic(self, start_guess, step_context, maxiter=100):
-        dt = self.dt
-        params_old_temp = self.params_old.copy()
-        coeffs_old_temp = self.coeffs_old.copy()
-        params_frozen_next = self.params_frozen
-
-        self.params_old, self.coeffs_old = propagate_kinetic_analytical(
-            dt / 2, self.params_old, self.coeffs_old, step_context.ones_D
-        )
-        if self.params_frozen is not None:
-            self.params_frozen = self.params_old[step_context.n_dynamic :]
-
-        coeffs_startguess = jnp.zeros(start_guess.shape[0], dtype=self.coeffs_old.dtype)
-        start_guess, _ = propagate_kinetic_analytical(dt / 2, start_guess, coeffs_startguess, step_context.ones_D)
-
-        params_solved_temp, coeffs_new_temp, final_RE, nit = self.find_next_timestep_solution(
-            start_guess, maxiter=maxiter
-        )
-
-        if self.params_frozen is not None:
-            params_solved_full = jnp.concatenate((params_solved_temp, self.params_frozen), axis=0)
-            params_solved_full, coeffs_new = propagate_kinetic_analytical(
-                dt / 2, params_solved_full, coeffs_new_temp, step_context.ones_D
-            )
-            params_solved = params_solved_full[: params_solved_temp.shape[0]]
-            params_frozen_next = params_solved_full[params_solved_temp.shape[0] :]
-        else:
-            params_solved, coeffs_new = propagate_kinetic_analytical(
-                dt / 2, params_solved_temp, coeffs_new_temp, step_context.ones_D
-            )
-
-        self.params_old = params_old_temp
-        self.coeffs_old = coeffs_old_temp
-        self.params_frozen = params_frozen_next
-
-        return StepResult(
-            params_solved=params_solved, coeffs_new=coeffs_new, rothe_error=float(final_RE), n_iterations=nit
+            params_solved=jnp.asarray(params_solved),
+            coeffs_new=jnp.asarray(coeffs_new),
+            rothe_error=float(final_RE),
+            n_iterations=nit,
         )
 
     def merge_new_and_frozen(self, params_solved):
@@ -481,12 +500,50 @@ class RotheSolver:
         return coeffs_new, S
 
     def compute_max_overlap(self, S, params_new_full, step_context):
+        max_overlap, _ = self.compute_max_overlap_with_indices(S, params_new_full, step_context)
+        return max_overlap
+
+    @staticmethod
+    def _dynamic_first_to_frozen_first_index(idx, n_dynamic, n_frozen):
+        if idx < n_dynamic:
+            return n_frozen + idx
+        return idx - n_dynamic
+
+    def compute_max_overlap_with_indices(self, S, params_new_full, step_context):
         S_np = np.asarray(S)
         S_abs = np.abs(S_np)
         n_dynamic = params_new_full.shape[0] - step_context.n_frozen
-        max_overlap_dyn_dyn = float(np.max(np.triu(S_abs[:n_dynamic, :n_dynamic], k=1))) if n_dynamic > 1 else 0.0
-        max_overlap_dyn_frozen = float(np.max(S_abs[:n_dynamic, n_dynamic:])) if step_context.n_frozen > 0 else 0.0
-        return max(max_overlap_dyn_dyn, max_overlap_dyn_frozen)
+        n_frozen = step_context.n_frozen
+
+        max_overlap = 0.0
+        best_pair_dynamic_first = None
+
+        if n_dynamic > 1:
+            tri_i, tri_j = np.triu_indices(n_dynamic, k=1)
+            dyn_dyn_vals = S_abs[tri_i, tri_j]
+            if dyn_dyn_vals.size > 0:
+                idx = int(np.argmax(dyn_dyn_vals))
+                max_overlap = float(dyn_dyn_vals[idx])
+                best_pair_dynamic_first = (int(tri_i[idx]), int(tri_j[idx]))
+
+        if n_frozen > 0 and n_dynamic > 0:
+            dyn_frozen_abs = S_abs[:n_dynamic, n_dynamic:]
+            if dyn_frozen_abs.size > 0:
+                flat_idx = int(np.argmax(dyn_frozen_abs))
+                row, col_local = np.unravel_index(flat_idx, dyn_frozen_abs.shape)
+                candidate_overlap = float(dyn_frozen_abs[row, col_local])
+                if candidate_overlap > max_overlap:
+                    max_overlap = candidate_overlap
+                    best_pair_dynamic_first = (int(row), int(n_dynamic + col_local))
+
+        if best_pair_dynamic_first is None:
+            return max_overlap, None
+
+        idx_a, idx_b = best_pair_dynamic_first
+        idx_a_frozen_first = self._dynamic_first_to_frozen_first_index(idx_a, n_dynamic, n_frozen)
+        idx_b_frozen_first = self._dynamic_first_to_frozen_first_index(idx_b, n_dynamic, n_frozen)
+        best_pair_frozen_first = tuple(sorted((idx_a_frozen_first, idx_b_frozen_first)))
+        return max_overlap, best_pair_frozen_first
 
     def compute_observables(self, params_new_full, coeffs_new):
         dipole_moment = None
@@ -592,7 +649,7 @@ class RotheSolver:
             max_overlaps = np.max(S_abs, axis=0)
         else:
             raise ValueError(f"Unexpected overlap matrix shape {S_abs.shape} for {candidates.shape[0]} candidates.")
-        keep_mask = max_overlaps <= _CANDIDATE_OVERLAP_DISCARD_THRESHOLD
+        keep_mask = max_overlaps <= _OVERLAP_THRESHOLD
         kept_candidates = candidates[keep_mask]
         discarded_count = int(candidates.shape[0] - kept_candidates.shape[0])
         return kept_candidates, discarded_count, max_overlaps
@@ -606,17 +663,13 @@ class RotheSolver:
         dt_imag = float(np.imag(self.dt))
         dt_abs_sq_4 = float(np.abs(self.dt) ** 2 / 4.0)
 
-        B_dagger_B = np.asarray(S_xx + dt_abs_sq_4 * H2_xx + dt_imag * H_xx)
+        B_dagger_B = np.asarray(make_B_block(S_xx, H_xx, H2_xx, dt_abs_sq_4, dt_imag))
 
-        S_nn, H_nn, H2_nn = self.SHH2(
-            t=t_mid, params_ket=params_new_base, params_bra=params_new_base, splitting_type=splitting_eff
+        (S_nn, H_nn, H2_nn), (S_xn, H_xn, H2_xn) = shh2_triplets(
+            self.SHH2, t_mid, splitting_eff, ((params_new_base, params_new_base), (params_new_base, self.params_old))
         )
-        A_dd = np.asarray(S_nn + dt_abs_sq_4 * H2_nn - dt_imag * H_nn)
-
-        S_xn, H_xn, H2_xn = self.SHH2(
-            t=t_mid, params_ket=params_new_base, params_bra=self.params_old, splitting_type=splitting_eff
-        )
-        rho_xd = np.asarray(S_xn - dt_abs_sq_4 * H2_xn - 1j * dt_real * H_xn)
+        A_dd = np.asarray(make_A_block(S_nn, H_nn, H2_nn, dt_abs_sq_4, dt_imag))
+        rho_xd = np.asarray(make_rho_block(S_xn, H_xn, H2_xn, dt_abs_sq_4, dt_real))
 
         if self.params_frozen is None:
             A_base = A_dd
@@ -625,20 +678,20 @@ class RotheSolver:
             S_base = np.asarray(S_nn)
         else:
             n_dyn = params_new_base.shape[0]
-            S_ff = np.asarray(S_xx[n_dyn:, n_dyn:])
-            H_ff = np.asarray(H_xx[n_dyn:, n_dyn:])
-            H2_ff = np.asarray(H2_xx[n_dyn:, n_dyn:])
-            A_ff = S_ff + dt_abs_sq_4 * H2_ff - dt_imag * H_ff
+            (S_ff, H_ff, H2_ff), (S_xf, H_xf, H2_xf) = split_oldold_frozen_triplets(S_xx, H_xx, H2_xx, n_dyn)
+            S_ff = np.asarray(S_ff)
+            H_ff = np.asarray(H_ff)
+            H2_ff = np.asarray(H2_ff)
+            A_ff = make_A_block(S_ff, H_ff, H2_ff, dt_abs_sq_4, dt_imag)
 
-            S_df, H_df, H2_df = self.SHH2(
-                t=t_mid, params_ket=self.params_frozen, params_bra=params_new_base, splitting_type=splitting_eff
+            ((S_df, H_df, H2_df),) = shh2_triplets(
+                self.SHH2, t_mid, splitting_eff, ((self.params_frozen, params_new_base),)
             )
-            A_df = np.asarray(S_df + dt_abs_sq_4 * H2_df - dt_imag * H_df)
-
-            S_xf = np.asarray(S_xx[:, n_dyn:])
-            H_xf = np.asarray(H_xx[:, n_dyn:])
-            H2_xf = np.asarray(H2_xx[:, n_dyn:])
-            rho_xf = S_xf - dt_abs_sq_4 * H2_xf - 1j * dt_real * H_xf
+            A_df = np.asarray(make_A_block(S_df, H_df, H2_df, dt_abs_sq_4, dt_imag))
+            S_xf = np.asarray(S_xf)
+            H_xf = np.asarray(H_xf)
+            H2_xf = np.asarray(H2_xf)
+            rho_xf = make_rho_block(S_xf, H_xf, H2_xf, dt_abs_sq_4, dt_real)
 
             A_base = np.block([[A_dd, A_df], [np.conj(A_df).T, A_ff]])
             rho_base = np.concatenate([rho_xd, rho_xf], axis=1)
@@ -659,22 +712,18 @@ class RotheSolver:
         }
 
     def _solve_rothe_from_blocks(self, A_dagger_A, rho_mat, B_dagger_B):
-        coeffs_old_np = np.asarray(self.coeffs_old)
-        rho_vec = np.conj(rho_mat).T @ coeffs_old_np
-        A_reg = A_dagger_A + np.eye(A_dagger_A.shape[0]) * self.regularization_lambda
-        coeffs_new = np.linalg.solve(A_reg, rho_vec)
-        overlap_term = np.conj(coeffs_old_np) @ B_dagger_B @ coeffs_old_np
-        projection_term = np.conj(rho_vec).T @ coeffs_new
-        rothe_error_val = float(np.real(overlap_term - projection_term))
+        rothe_error_val, coeffs_new = solve_and_score_numpy(
+            A_dagger_A, rho_mat, B_dagger_B, self.coeffs_old, self.regularization_lambda
+        )
         return rothe_error_val, jnp.asarray(coeffs_new)
 
-    def _evaluate_candidate_added_error(self, params_new_base, blocks, candidate_param, overlap_penalty_scale=0.0):
+    def _evaluate_candidate_added_error(self, params_new_base, blocks, candidate_param):
         candidate_param = jnp.asarray(candidate_param)
         if candidate_param.ndim != 3 or candidate_param.shape[0] != 1:
             raise ValueError(f"Expected candidate shape (1, D, 4), got {candidate_param.shape}")
         frozen_blocks = blocks["frozen_blocks"]
         has_frozen = frozen_blocks is not None
-        A_aug, rho_aug, S_dyn_aug, S_of_aug = _augment_blocks_with_candidate(
+        A_aug, rho_aug, _, _ = _augment_blocks_with_candidate(
             self.SHH2,
             blocks["t_mid"],
             blocks["dt_real"],
@@ -694,17 +743,7 @@ class RotheSolver:
             S_base=jnp.asarray(blocks["S_base"]),
             S_df=jnp.asarray(frozen_blocks["S_df"]) if has_frozen else None,
         )
-        err, coeffs_new = self._solve_rothe_from_blocks(np.asarray(A_aug), np.asarray(rho_aug), blocks["B"])
-        if overlap_penalty_scale != 0.0:
-            S_dyn_frozen_aug = S_of_aug if has_frozen else None
-            if has_frozen:
-                S_ff = jnp.asarray(frozen_blocks["S_ff"])
-                S_new_full = jnp.block([[S_dyn_aug, S_of_aug], [jnp.conj(S_of_aug).T, S_ff]])
-            else:
-                S_new_full = S_dyn_aug
-            # pen = float(np.asarray(_overlap_penalty(S_dyn_aug, S_dyn_frozen_aug) + _log_det_penalty(S_new_full)))
-            err = err  # + overlap_penalty_scale * pen
-        return err, coeffs_new
+        return self._solve_rothe_from_blocks(np.asarray(A_aug), np.asarray(rho_aug), blocks["B"])
 
     def optimize_single_gaussian(self, params_new_base, candidate_init, SHH2_oldold, maxiter=100):
         """Optimize only the newly added Gaussian while keeping all existing ones fixed."""
@@ -762,6 +801,57 @@ class RotheSolver:
         )
         return params_solved, coeffs_new, float(final_RE), int(nit)
 
+    def remove_overlapping_dynamic_gaussian_if_needed(self, step_result, maxiter):
+        """Remove one dynamic Gaussian if it overlaps a frozen Gaussian too strongly."""
+        if not self.remove_overlapping_gaussians:
+            return step_result, False
+        if self.params_frozen is None or self.params_frozen.shape[0] == 0:
+            return step_result, False
+
+        params_dynamic = np.asarray(step_result.params_solved)
+        n_dynamic = int(params_dynamic.shape[0])
+        n_frozen = int(self.params_frozen.shape[0])
+        if n_dynamic <= 1:
+            return step_result, False
+
+        params_new_full = jnp.concatenate((jnp.asarray(params_dynamic), self.params_frozen), axis=0)
+        S, _, _ = self.SHH2(
+            t=self.t, params_ket=params_new_full, params_bra=params_new_full, splitting_type=self.splitting_type
+        )
+        S_abs = np.abs(np.asarray(S))
+        dyn_frozen_abs = S_abs[:n_dynamic, n_dynamic:]
+        if dyn_frozen_abs.size == 0:
+            return step_result, False
+
+        flat_idx = int(np.argmax(dyn_frozen_abs))
+        dyn_idx, frozen_local_idx = np.unravel_index(flat_idx, dyn_frozen_abs.shape)
+        max_dyn_frozen_overlap = float(dyn_frozen_abs[dyn_idx, frozen_local_idx])
+        if not np.isfinite(max_dyn_frozen_overlap) or max_dyn_frozen_overlap <= _OVERLAP_THRESHOLD:
+            return step_result, False
+
+        frozen_global_idx = int(frozen_local_idx)
+        dynamic_global_idx = int(n_frozen + dyn_idx)
+        print(
+            f"Removing dynamic Gaussian {dyn_idx} because |S|={max_dyn_frozen_overlap:.4f} "
+            f"exceeds {_OVERLAP_THRESHOLD:.2f} with frozen Gaussian {frozen_local_idx} "
+            f"(indices: ({frozen_global_idx},{dynamic_global_idx}))."
+        )
+
+        params_pruned = np.delete(params_dynamic, int(dyn_idx), axis=0)
+        params_reopt, coeffs_reopt, err_reopt, nit_reopt = self.reoptimize_all_gaussians(
+            params_pruned, maxiter=int(maxiter)
+        )
+        print(f"Squared Rothe error after overlap-based removal and reoptimization: {err_reopt:.3e}")
+        return (
+            StepResult(
+                params_solved=jnp.asarray(params_reopt),
+                coeffs_new=jnp.asarray(coeffs_reopt),
+                rothe_error=float(err_reopt),
+                n_iterations=int(nit_reopt),
+            ),
+            True,
+        )
+
     def adding_strategy_as_a_whole(
         self, params_new_base, coeffs_before, rothe_error_before, nit_before, threshold, maxiter
     ):
@@ -780,7 +870,7 @@ class RotheSolver:
         if discarded_overlap_count > 0:
             print(
                 f"Discarded {discarded_overlap_count} candidate Gaussian(s) with max overlap "
-                f"> {_CANDIDATE_OVERLAP_DISCARD_THRESHOLD:.2f}."
+                f"> {_OVERLAP_THRESHOLD:.2f}."
             )
         print(f"Evaluating {candidates.shape[0]} candidate Gaussian(s) after overlap filtering.")
 
@@ -798,9 +888,7 @@ class RotheSolver:
         best_candidate = None
         for idx in range(candidates.shape[0]):
             candidate = jnp.asarray(candidates[idx : idx + 1])
-            err, _ = self._evaluate_candidate_added_error(
-                params_new_base, base_blocks, candidate, overlap_penalty_scale=float(0)
-            )
+            err, _ = self._evaluate_candidate_added_error(params_new_base, base_blocks, candidate)
             if err < best_err:
                 best_err = float(err)
                 best_idx = idx
@@ -812,9 +900,7 @@ class RotheSolver:
             )
 
         # Compute pure Rothe error (without overlap penalty) for the best candidate
-        best_err_pure, _ = self._evaluate_candidate_added_error(
-            params_new_base, base_blocks, best_candidate, overlap_penalty_scale=0.0
-        )
+        best_err_pure, _ = self._evaluate_candidate_added_error(params_new_base, base_blocks, best_candidate)
         print(f"Squared Rothe error after adding a Gaussian: {best_err_pure:.3e} (penalized: {best_err:.3e})")
 
         params_after_single_opt, coeffs_after_single_opt, err_single_opt, _ = self.optimize_single_gaussian(
@@ -828,16 +914,14 @@ class RotheSolver:
         print(f"Squared Rothe error after full reoptimization: {err_full_reopt:.3e}")
 
         return StepResult(
-            params_solved=params_after_full_reopt,
-            coeffs_new=coeffs_after_full_reopt,
+            params_solved=jnp.asarray(params_after_full_reopt),
+            coeffs_new=jnp.asarray(coeffs_after_full_reopt),
             rothe_error=float(err_full_reopt),
             n_iterations=int(nit_full),
         )
 
     def advance_solver_state(self, params_new_full, coeffs_new, start_time):
-        n_frozen = self.params_frozen.shape[0] if self.params_frozen is not None else 0
-        n_dynamic = self.params_old.shape[0] - n_frozen
-        self.params_oldold = self.params_old[:n_dynamic]  # dynamic part only
+        self.params_oldold = self.params_old[: self.n_dynamic]  # dynamic part only
         self.params_old = params_new_full
         self.coeffs_old = coeffs_new
         time_taken = time.time() - start_time
@@ -853,15 +937,11 @@ class RotheSolver:
         for _ in range(num_iterations):
             added_gaussian_this_step = False
             step_context = self.init_step_context()
-            self.t += self.dt
+
             start = time.time()
+            self.t += self.dt
             start_guess = self.build_startguess(step_context)
-            if self.splitting_type in (None, "none"):
-                step_result = self.solve_step_none(start_guess, maxiter=maxiter)
-            elif self.splitting_type == "kinetic":
-                step_result = self.solve_step_kinetic(start_guess, step_context, maxiter=maxiter)
-            else:
-                raise ValueError(f"Unknown splitting_type {self.splitting_type!r}; expected 'none' or 'kinetic'.")
+            step_result = self.solve_step_none(start_guess, maxiter=maxiter)
             if step_result.rothe_error < 0:
                 print(
                     f"Warning: Negative squared Rothe error {step_result.rothe_error:.3e} encountered. "
@@ -872,32 +952,27 @@ class RotheSolver:
                 sqrt_re = float(step_result.rothe_error) ** 0.5
             if sqrt_re > self.threshold:
                 print(
-                    f"Squared Rothe error too big ({step_result.rothe_error:.3e}), "
-                    f"rerunning optimization with maxiter=1000."
+                    f"Squared Rothe error too big ({step_result.rothe_error:.3e}); "
+                    "proceeding directly to Gaussian addition strategy."
                 )
-                if self.splitting_type in (None, "none"):
-                    step_result = self.solve_step_none(step_result.params_solved, maxiter=1000)
-                elif self.splitting_type == "kinetic":
-                    step_result = self.solve_step_kinetic(step_result.params_solved, step_context, maxiter=1000)
-                print(f"Squared Rothe error after rerun: {step_result.rothe_error:.3e}")
+                if self._gaussian_addition_cooldown_remaining > 0:
+                    print(
+                        "Skipping Gaussian addition due to cooldown "
+                        f"({self._gaussian_addition_cooldown_remaining} step(s) remaining)."
+                    )
+                else:
+                    step_result = self.adding_strategy_as_a_whole(
+                        params_new_base=step_result.params_solved,
+                        coeffs_before=step_result.coeffs_new,
+                        rothe_error_before=float(step_result.rothe_error),
+                        nit_before=int(step_result.n_iterations),
+                        threshold=self.threshold,
+                        maxiter=maxiter,
+                    )
+                    added_gaussian_this_step = True
+                    self._gaussian_addition_cooldown_remaining = self.gaussian_addition_cooldown_steps
 
-                if float(step_result.rothe_error) ** 0.5 > self.threshold:
-                    if self._gaussian_addition_cooldown_remaining > 0:
-                        print(
-                            "Skipping Gaussian addition due to cooldown "
-                            f"({self._gaussian_addition_cooldown_remaining} step(s) remaining)."
-                        )
-                    else:
-                        step_result = self.adding_strategy_as_a_whole(
-                            params_new_base=step_result.params_solved,
-                            coeffs_before=step_result.coeffs_new,
-                            rothe_error_before=float(step_result.rothe_error),
-                            nit_before=int(step_result.n_iterations),
-                            threshold=self.threshold,
-                            maxiter=maxiter,
-                        )
-                        added_gaussian_this_step = True
-                        self._gaussian_addition_cooldown_remaining = self.gaussian_addition_cooldown_steps
+            step_result, _ = self.remove_overlapping_dynamic_gaussian_if_needed(step_result, maxiter=maxiter)
 
             params_new_full = self.merge_new_and_frozen(step_result.params_solved)
             if np.isrealobj(self.t) and not np.iscomplexobj(self.t):
@@ -907,15 +982,22 @@ class RotheSolver:
 
             coeffs_new = step_result.coeffs_new
             max_overlap = float("nan")
+            max_overlap_indices = None
             if renormalize:
                 coeffs_new, S = self.renormalize_coeffs(coeffs_new, params_new_full)
-                max_overlap = self.compute_max_overlap(S, params_new_full, step_context)
+                max_overlap, max_overlap_indices = self.compute_max_overlap_with_indices(
+                    S, params_new_full, step_context
+                )
+
+            overlap_indices_text = "n/a"
+            if max_overlap_indices is not None:
+                overlap_indices_text = f"({max_overlap_indices[0]},{max_overlap_indices[1]})"
 
             self.cumulative_rothe_error += abs(float(step_result.rothe_error)) ** 0.5
             print(
-                f"Time {time_str}:Squared Rothe error: {step_result.rothe_error:.3e}, "
+                f"Time {time_str}: Squared Rothe error: {step_result.rothe_error:.3e}, "
                 f"Number of iterations: {step_result.n_iterations}, "
-                f"Max overlap: {max_overlap:.4f}, "
+                f"Max overlap: {max_overlap:.4f} (indices: {overlap_indices_text}), "
                 f"Cumulative Rothe error: {self.cumulative_rothe_error:.2e}"
             )
 

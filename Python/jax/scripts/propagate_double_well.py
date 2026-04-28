@@ -42,15 +42,21 @@ def make_initial_coeffs(n: int) -> jnp.ndarray:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Propagate a single Gaussian in a 1D double-well.")
-    parser.add_argument("--num_gaussians", type=int, default=1, help="Initial number of Gaussians")
+    parser.add_argument("--num_gaussians", type=int, default=25, help="Initial number of Gaussians")
     parser.add_argument("--dt", type=float, default=0.1, help="Time step (default 0.1)")
     parser.add_argument("--t_final", type=float, default=20.0, help="Final time (default 20)")
-    parser.add_argument("--epsilon", type=float, default=1e-3, help="Global Rothe-error budget (default 1e-3)")
-    parser.add_argument("--regularization_lambda", type=float, default=1e-12, help="Tikhonov regularization strength")
+    parser.add_argument("--epsilon", type=float, default=1e-2, help="Global Rothe-error budget (default 1e-3)")
+    parser.add_argument("--regularization_lambda", type=float, default=1e-10, help="Tikhonov regularization strength")
     parser.add_argument("--splitting_type", type=str, default="none", choices=["none", "kinetic"])
     parser.add_argument("--random_seed", type=int, default=0)
     parser.add_argument("--maxiter", type=int, default=200)
     parser.add_argument("--t_start", type=float, default=None, help="Resume from checkpoint at or before this time")
+    parser.add_argument(
+        "--remove_overlapping_gaussians",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Remove one dynamic Gaussian if its overlap with a frozen Gaussian exceeds 0.99, then re-optimize.",
+    )
     return parser.parse_args()
 
 
@@ -89,6 +95,7 @@ def main():
         rothe_nograd=rothe_error,
         splitting_type=splitting_type,
         output_config=OutputConfig(name=sim_name, polynomial_string=DOUBLE_WELL_STRING, epsilon=epsilon),
+        remove_overlapping_gaussians=args.remove_overlapping_gaussians,
     )
 
     nsteps = resume_or_initialize_rothe(

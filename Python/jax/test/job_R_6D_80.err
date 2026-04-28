@@ -1,0 +1,24 @@
+E0414 11:43:36.847039 2457764 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0414 11:43:36.847125 2457765 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0414 11:43:36.847161 2457766 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0414 11:44:20.616729 2457768 legacy_cache.cc:68] Failed to insert autotune cache: FAILED_PRECONDITION: /cluster/home/simonsch/.cache/jax/xla_gpu_per_fusion_autotune_cache_dir/tmp/tmp_per_fusion_cache_6pCUEj_o0gseNHmaOXbjYBn9FGlKOjGTxtbKd0P_1KA_1776159860571020143.textproto; Device or resource busy
+Traceback (most recent call last):
+  File "/cluster/home/simonsch/modular_Rothe/Python/jax/scripts/propagate_henon_heiles.py", line 90, in <module>
+    main()
+  File "/cluster/home/simonsch/modular_Rothe/Python/jax/scripts/propagate_henon_heiles.py", line 86, in main
+    rothesolver.propagate(nsteps, num_time_steps_total=nsteps_total, maxiter=1000)
+  File "/cluster/home/simonsch/modular_Rothe/Python/jax/rothe/solver.py", line 858, in propagate
+    start_guess = self.build_startguess(step_context)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cluster/home/simonsch/modular_Rothe/Python/jax/rothe/solver.py", line 392, in build_startguess
+    SHH2_oldold = compute_SHH2_oldold(self.SHH2, self.params_old, self.t + self.dt / 2, self.splitting_type)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+jax.errors.JaxRuntimeError: FAILED_PRECONDITION: /cluster/home/simonsch/.cache/jax/xla_gpu_per_fusion_autotune_cache_dir/tmp/tmp_per_fusion_cache_6pCUEj_o0gseNHmaOXbjYBn9FGlKOjGTxtbKd0P_1KA_1776159860571020143.textproto; Device or resource busy
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+E0414 11:50:59.864972 2460341 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0414 11:50:59.865058 2460342 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0414 11:50:59.865094 2460343 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+[2026-04-15T15:10:11.437] error: *** JOB 17614902 ON gpu-12-5 CANCELLED AT 2026-04-15T15:10:11 DUE to SIGNAL Terminated ***
+W0415 15:11:36.543627 3430434 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0415 15:12:26.787876 3430434 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.

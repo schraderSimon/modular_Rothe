@@ -191,3 +191,62 @@ def test_overlap_filter_discards_duplicate_candidates():
     assert discarded_count == 2, f"Expected 2 discarded candidates, got {discarded_count}"
     assert kept_candidates.shape[0] == 0, f"Expected 0 kept candidates, got {kept_candidates.shape[0]}"
     assert np.all(max_overlaps > 0.99), f"Expected all max overlaps > 0.99, got {max_overlaps}"
+
+
+def test_remove_overlapping_dynamic_gaussian_with_frozen_core():
+    """When enabled, remove one dynamic Gaussian overlapping a frozen Gaussian > 0.99."""
+    SHH2 = set_up_SHH2(potential_string=_POLY_STRING_1D_HO, D=1)
+    rothe_error, rothe_vg_jit = setUpRotheErrorAndGradient_jit("none")
+
+    params_frozen = _ground_state_params_1d()
+    params_dynamic = jnp.concatenate([params_frozen, params_frozen.at[0, 0, 2].set(1.0)], axis=0)
+    params_old = jnp.concatenate([params_dynamic, params_frozen], axis=0)
+    coeffs_old = jnp.array([0.5 + 0.0j, 0.0 + 0.0j, 1.0 + 0.0j])
+
+    solver = RotheSolver(
+        SHH2=SHH2,
+        dt=0.05,
+        t=0.0,
+        epsilon=1.0,
+        regularization_lambda=1e-12,
+        params_old=params_old,
+        coeffs_old=coeffs_old,
+        rothe_grad_fn=rothe_vg_jit,
+        rothe_nograd=rothe_error,
+        params_frozen=params_frozen,
+        remove_overlapping_gaussians=True,
+    )
+
+    step_result = solver.solve_step_none(startguess=np.asarray(params_dynamic), maxiter=0)
+    step_result_after, removed = solver.remove_overlapping_dynamic_gaussian_if_needed(step_result, maxiter=5)
+
+    assert removed, "Expected an overlapping dynamic Gaussian to be removed."
+    assert (
+        step_result_after.params_solved.shape[0] == 1
+    ), f"Expected 1 dynamic Gaussian after removal, got {step_result_after.params_solved.shape[0]}"
+
+
+def test_propagate_uses_same_time_for_startguess_and_optimization():
+    """Start-guess scoring must use the same time as the optimization objective."""
+    solver, _ = _make_solver(dt=0.05)
+
+    observed = {}
+    original_build_startguess = solver.build_startguess
+    original_find_next = solver.find_next_timestep_solution
+
+    def build_startguess_spy(step_context):
+        observed["t_build"] = float(np.real(solver.t))
+        return original_build_startguess(step_context)
+
+    def find_next_spy(params_init=None, maxiter=100, given_gtol=None):
+        observed["t_find"] = float(np.real(solver.t))
+        return original_find_next(params_init=params_init, maxiter=maxiter, given_gtol=given_gtol)
+
+    solver.build_startguess = build_startguess_spy  # type: ignore[method-assign]
+    solver.find_next_timestep_solution = find_next_spy  # type: ignore[method-assign]
+
+    solver.propagate(num_iterations=1, num_time_steps_total=1, maxiter=0, renormalize=False)
+
+    assert "t_build" in observed, "build_startguess was not called"
+    assert "t_find" in observed, "find_next_timestep_solution was not called"
+    assert observed["t_build"] == pytest.approx(observed["t_find"])

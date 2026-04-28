@@ -10,7 +10,8 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import solve
+from rothe.block_assembly import make_A_block, make_B_block, make_rho_block, shh2_triplets, split_oldold_frozen_triplets
+from rothe.linear_solve import solve_and_score_jax
 from rothe.optimization import RotheObjectiveContext
 
 
@@ -40,41 +41,6 @@ def _overlap_penalty(S_dyn_dyn, S_dyn_frozen=None, center=0.99**2, sharpness=100
     return multiplier * pen
 
 
-def _log_det_penalty(S_new_full, multiplier=100):
-    """Penalty -log(det(S)) / N on the full new-time basis overlap matrix.
-
-    Discourages near-linear dependence across all new basis functions (dynamic
-    and frozen).  As the basis approaches linear dependence, det(S) -> 0 and
-    the penalty diverges to +inf, pushing parameters apart.
-    """
-    sign, det = jnp.linalg.slogdet(S_new_full)
-    det_div = det / S_new_full.shape[0]
-    return -det_div / multiplier
-
-
-def _fixed_basis_prediction_penalty(A_dagger_A, S_new_full, H_new_full, H2_new_full, coeffs_old, lambda_, dt):
-    """Estimate the next-step Rothe error when the full new basis is kept fixed.
-
-    This reuses the current-step full new-basis blocks and only resolves the
-    linear coefficients for one additional Rothe step under the approximation
-    that the Hamiltonian does not change over the next interval.
-    """
-    dt_real = jnp.real(dt)
-    dt_imag = jnp.imag(dt)
-    dt_abs_sq_4 = jnp.abs(dt) ** 2 / 4
-
-    B_dagger_B = S_new_full + dt_abs_sq_4 * H2_new_full + dt_imag * H_new_full
-    rho_mat = S_new_full - dt_abs_sq_4 * H2_new_full - 1j * dt_real * H_new_full
-
-    rho_vec = jnp.conj(rho_mat).T @ coeffs_old
-    I = jnp.eye(A_dagger_A.shape[0], dtype=A_dagger_A.dtype)
-    coeffs_pred = solve(A_dagger_A + I * lambda_, rho_vec)
-
-    overlap_term = jnp.conj(coeffs_old) @ B_dagger_B @ coeffs_old
-    projection_term = jnp.conj(rho_vec).T @ coeffs_pred
-    return jnp.real(overlap_term - projection_term)
-
-
 @partial(jax.jit, static_argnames=("SHH2", "splitting_type"))
 def compute_SHH2_oldold(SHH2, params_old, t_mid, splitting_type):
     """Precompute S, H, H² at midpoint time for old-old block (incl. frozen terms)."""
@@ -97,29 +63,15 @@ def build_objective_context(SHH2, params_old, coeffs_old, t, dt, splitting_type,
     )
 
 
-def _get_oldold_blocks(SHH2, params_old, t_mid, splitting_eff, SHH2_oldold):
-    if SHH2_oldold is None:
-        SHH2_oldold = compute_SHH2_oldold(SHH2, params_old, t_mid, splitting_eff)
-    return SHH2_oldold
-
-
-def _compute_frozen_coupling_blocks(SHH2, t_mid, splitting_eff, basis):
-    """Compute SHH2 blocks involving new, old, and frozen basis functions."""
-    S_nn, H_nn, H2_nn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.new, splitting_type=splitting_eff)
-    S_nf, H_nf, H2_nf = SHH2(t=t_mid, params_ket=basis.frozen, params_bra=basis.new, splitting_type=splitting_eff)
-    S_xn, H_xn, H2_xn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.old, splitting_type=splitting_eff)
-    return (S_nn, H_nn, H2_nn), (S_nf, H_nf, H2_nf), (S_xn, H_xn, H2_xn)
-
-
 def _assemble_AdA_and_rho(SHH2, splitting_eff, t_mid, dt, basis, SHH2_oldold):
     """Assemble linear-system blocks for one Rothe objective evaluation.
 
     Notation:
     - ``n``: optimizable new basis
-    - ``o``: optimizable old basis
+    - ``o``: dynamic old basis (optimizable at the previous step)
     - ``f``: frozen basis
-    - ``x``: full old-state basis (``o`` + ``f`` when frozen is present;
-      otherwise ``x == o``)
+        - ``x``: full old-state basis (``o`` + ``f`` when frozen is present,
+            otherwise ``x == o``)
 
     Shapes:
     - ``basis.new``: ``(n_new, D, 4)``
@@ -138,23 +90,22 @@ def _assemble_AdA_and_rho(SHH2, splitting_eff, t_mid, dt, basis, SHH2_oldold):
     dt_imag = jnp.imag(dt)
     dt_abs_sq_4 = jnp.abs(dt) ** 2 / 4
     S_xx, H_xx, H2_xx = SHH2_oldold
-    B_dagger_B = S_xx + dt_abs_sq_4 * H2_xx + dt_imag * H_xx
+    B_dagger_B = make_B_block(S_xx, H_xx, H2_xx, dt_abs_sq_4, dt_imag)
 
     if basis.frozen is not None:
-        n_opt = basis.old.shape[0] - basis.frozen.shape[0]
-        S_ff = S_xx[n_opt:, n_opt:]
-        H_ff = H_xx[n_opt:, n_opt:]
-        H2_ff = H2_xx[n_opt:, n_opt:]
-        AdA_ff = S_ff + dt_abs_sq_4 * H2_ff - dt_imag * H_ff
+        n_dyn = basis.old.shape[0] - basis.frozen.shape[0]
+        (S_ff, H_ff, H2_ff), (S_xf, H_xf, H2_xf) = split_oldold_frozen_triplets(S_xx, H_xx, H2_xx, n_dyn)
 
-        S_xf, H_xf, H2_xf = S_xx[:, n_opt:], H_xx[:, n_opt:], H2_xx[:, n_opt:]
-        rho_xf = S_xf - dt_abs_sq_4 * H2_xf - 1j * dt_real * H_xf
-        nn, nf, xn = _compute_frozen_coupling_blocks(SHH2, t_mid, splitting_eff, basis)
-        (S_nn, H_nn, H2_nn), (S_nf, H_nf, H2_nf), (S_xn, H_xn, H2_xn) = nn, nf, xn
+        AdA_ff = make_A_block(S_ff, H_ff, H2_ff, dt_abs_sq_4, dt_imag)
+        rho_xf = make_rho_block(S_xf, H_xf, H2_xf, dt_abs_sq_4, dt_real)
 
-        AdA_nn = S_nn + dt_abs_sq_4 * H2_nn - dt_imag * H_nn
-        AdA_nf = S_nf + dt_abs_sq_4 * H2_nf - dt_imag * H_nf
-        rho_xn = S_xn - dt_abs_sq_4 * H2_xn - 1j * dt_real * H_xn
+        (S_nn, H_nn, H2_nn), (S_nf, H_nf, H2_nf), (S_xn, H_xn, H2_xn) = shh2_triplets(
+            SHH2, t_mid, splitting_eff, ((basis.new, basis.new), (basis.frozen, basis.new), (basis.new, basis.old))
+        )
+
+        AdA_nn = make_A_block(S_nn, H_nn, H2_nn, dt_abs_sq_4, dt_imag)
+        AdA_nf = make_A_block(S_nf, H_nf, H2_nf, dt_abs_sq_4, dt_imag)
+        rho_xn = make_rho_block(S_xn, H_xn, H2_xn, dt_abs_sq_4, dt_real)
 
         A_dagger_A = jnp.block([[AdA_nn, AdA_nf], [jnp.conj(AdA_nf).T, AdA_ff]])
         rho_mat = jnp.concatenate([rho_xn, rho_xf], axis=1)
@@ -164,22 +115,15 @@ def _assemble_AdA_and_rho(SHH2, splitting_eff, t_mid, dt, basis, SHH2_oldold):
         penalty_mats = (S_nn, S_nf, S_new_full)
         prediction_mats = (S_new_full, H_new_full, H2_new_full)
     else:
-        S_nn, H_nn, H2_nn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.new, splitting_type=splitting_eff)
-        S_xn, H_xn, H2_xn = SHH2(t=t_mid, params_ket=basis.new, params_bra=basis.old, splitting_type=splitting_eff)
-        A_dagger_A = S_nn + dt_abs_sq_4 * H2_nn - dt_imag * H_nn
-        rho_mat = S_xn - dt_abs_sq_4 * H2_xn - 1j * dt_real * H_xn
+        (S_nn, H_nn, H2_nn), (S_xn, H_xn, H2_xn) = shh2_triplets(
+            SHH2, t_mid, splitting_eff, ((basis.new, basis.new), (basis.new, basis.old))
+        )
+        A_dagger_A = make_A_block(S_nn, H_nn, H2_nn, dt_abs_sq_4, dt_imag)
+        rho_mat = make_rho_block(S_xn, H_xn, H2_xn, dt_abs_sq_4, dt_real)
         penalty_mats = (S_nn, None, S_nn)
         prediction_mats = (S_nn, H_nn, H2_nn)
 
     return A_dagger_A, rho_mat, B_dagger_B, penalty_mats, prediction_mats
-
-
-def _solve_coeffs_new(A_dagger_A, rho_mat, coeffs_old, lambda_):
-    rho_vec = jnp.conj(rho_mat).T @ coeffs_old
-    I = jnp.eye(A_dagger_A.shape[0])
-    S_reg = A_dagger_A + I * lambda_
-    coeffs_new = solve(S_reg, rho_vec)
-    return coeffs_new, rho_vec
 
 
 def setUpRotheErrorAndGradient_jit(splitting_type):
@@ -189,7 +133,9 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
     Returns:
         rothe_error: callable
             ``(params_new, params_old, coeffs_old, SHH2, t, dt,
-               params_frozen=None, return_cnew=False, lambda_=1e-8) -> error``
+               params_frozen=None, return_cnew=False, lambda_) -> error``
+
+            ``lambda_`` must be passed explicitly; no internal default is used.
 
             ``params_frozen`` (optional): nonlinear basis-function parameters that are
             included in the new-time wave function but held fixed during optimisation.
@@ -208,35 +154,30 @@ def setUpRotheErrorAndGradient_jit(splitting_type):
         dt,
         params_frozen=None,
         return_cnew=False,
-        lambda_=1e-12,
+        lambda_=None,
         SHH2_oldold=None,
         overlap_penalty_scale=0.0,
         predictive_penalty_scale=0.0,
     ):
+        if lambda_ is None:
+            raise ValueError("lambda_ must be provided explicitly (use the user-provided regularization_lambda).")
         splitting_eff = "none" if splitting_type in (None, "none") else splitting_type
         t_mid = t + dt / 2
         basis = BasisParams(new=params_new, old=params_old, frozen=params_frozen)
-        SHH2_oldold = _get_oldold_blocks(SHH2, basis.old, t_mid, splitting_eff, SHH2_oldold)
+        if SHH2_oldold is None:
+            SHH2_oldold = compute_SHH2_oldold(SHH2, basis.old, t_mid, splitting_eff)
         A_dagger_A, rho_mat, B_dagger_B, penalty_mats, prediction_mats = _assemble_AdA_and_rho(
             SHH2, splitting_eff, t_mid, dt, basis, SHH2_oldold
         )
-        coeffs_new, rho_vec = _solve_coeffs_new(A_dagger_A, rho_mat, coeffs_old, lambda_)
-
-        overlap_term = jnp.conj(coeffs_old) @ B_dagger_B @ coeffs_old
-        projection_term = jnp.conj(rho_vec).T @ coeffs_new
-        rothe_error_val = jnp.real(overlap_term - projection_term)
+        rothe_error_val, coeffs_new = solve_and_score_jax(A_dagger_A, rho_mat, B_dagger_B, coeffs_old, lambda_)
 
         if not return_cnew:
             S_dyn_dyn, S_dyn_frozen, S_new_full = penalty_mats
             S_pred_full, H_pred_full, H2_pred_full = prediction_mats
             multiplier = 0.01
             penalty = (
-                multiplier * jnp.abs(overlap_penalty_scale) * _overlap_penalty(S_dyn_dyn, S_dyn_frozen, center=0.97**2)
+                multiplier * jnp.abs(overlap_penalty_scale) * _overlap_penalty(S_dyn_dyn, S_dyn_frozen, center=0.990**2)
             )
-            # penalty += jnp.abs(predictive_penalty_scale) * _fixed_basis_prediction_penalty(
-            #    A_dagger_A, S_pred_full, H_pred_full, H2_pred_full, coeffs_new, lambda_, dt
-            # )
-            # penalty += jnp.abs(overlap_penalty_scale) * _log_det_penalty(S_new_full)
             rothe_error_val = rothe_error_val + penalty
 
         if return_cnew:

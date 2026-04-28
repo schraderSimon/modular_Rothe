@@ -19,7 +19,7 @@ class RotheObjectiveContext:
     dt: Any
     params_frozen: Any = None
     SHH2_oldold: Any = None
-    regularization_lambda: float = 1e-12
+    regularization_lambda: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -27,18 +27,19 @@ class RotheObjectiveContext:
 # ---------------------------------------------------------------------------
 
 
-def compute_tanh_bounds(params_init_flat, params_shape, p=0.1, q=0.01, a_min=1e-4):
+def compute_tanh_bounds(params_init_flat, params_shape, p=0.1, q=0.01, a_min=1e-2, a_max=1e2):
     """Compute element-wise (lb, ub) from the initial parameter vector.
 
     lb_j = init_j - p * |init_j| - q
     ub_j = init_j + p * |init_j| + q
 
-    The lower bound for width parameters (index k=0 in the last axis of
-    the (n, D, 4) layout) is clamped to *a_min* so that Gaussian widths
-    stay strictly positive.
+    Bounds are symmetric around the initial point for all coordinates.
+    Additionally, the real width part ``a`` (k=0 in ``(n, D, 4)``) is clipped
+    to ``[a_min, a_max]`` so Gaussian widths stay in a stable positive range.
     """
     params_init_flat = np.asarray(params_init_flat, dtype=float)
     half_width = p * np.abs(params_init_flat) + q
+
     lb = params_init_flat - half_width
     ub = params_init_flat + half_width
 
@@ -47,6 +48,7 @@ def compute_tanh_bounds(params_init_flat, params_shape, p=0.1, q=0.01, a_min=1e-
     a_mask[:, :, 0] = True
     a_mask_flat = a_mask.ravel()
     lb[a_mask_flat] = np.maximum(lb[a_mask_flat], a_min)
+    ub[a_mask_flat] = np.minimum(ub[a_mask_flat], a_max)
     return lb, ub
 
 
@@ -94,6 +96,8 @@ def make_objective_params(rothe_error_and_gradient, params_shape, context):
     params_frozen = context.params_frozen
     SHH2_oldold = context.SHH2_oldold
     regularization_lambda = context.regularization_lambda
+    if regularization_lambda is None:
+        raise ValueError("regularization_lambda must be provided in RotheObjectiveContext.")
 
     def f_and_g_params(theta_flat):
         params_new = jnp.asarray(theta_flat).reshape(params_shape)
@@ -148,51 +152,55 @@ def compute_gtol(initial_err):
     """
     Stopping criterion for BFGS.
     """
-    return initial_err / 100  #
+    return initial_err / 10  #
 
 
-def maybe_apply_bb1_scaling(params_old, params_oldold, g_only_params, t, hess_inv_default):
+def make_scaled_identity(scale, dim):
+    """Return ``scale * I`` with shape ``(dim, dim)``."""
+    return float(scale) * np.eye(int(dim), dtype=float)
+
+
+def compute_bb1_inverse_hessian_scale(
+    params_old, params_oldold, g_only_params, *, default_scale=1.0, max_scale=1e8, t=None
+):
+    """Compute BB1 scalar for inverse-Hessian initialization.
+
+    BB1 uses
+        s = x_k - x_{k-1}
+        y = g_k - g_{k-1}
+        H0 = (s^T s / s^T y) I
+
+    If BB1 is not usable (missing previous step, bad curvature, non-finite
+    values), ``default_scale`` is returned.
     """
-    Optionally apply BB1 (Barzilai-Borwein type 1) scaling to the
-    initial inverse Hessian in parameter space.
+    default_scale = float(default_scale)
+    if not np.isfinite(default_scale) or default_scale <= 0.0:
+        default_scale = 1.0
 
-    If the curvature condition is satisfied by the previous two steps,
-    return BB1 * I. Otherwise, return the default.
-    """
     if params_oldold is None:
-        return hess_inv_default
+        return default_scale
 
-    # Flatten p's
     params_old_flat = np.asarray(params_old).ravel()
     params_oldold_flat = np.asarray(params_oldold).ravel()
-
-    # Step in parameter space.
     s_vec = params_old_flat - params_oldold_flat
 
-    # Gradients at both previous solved steps in p-space (independent of start guess)
     grad_old_params_flat = np.asarray(g_only_params(params_old_flat))
     grad_oldold_params_flat = np.asarray(g_only_params(params_oldold_flat))
-
-    # Gradient differences in parameter space.
     y_vec = grad_old_params_flat - grad_oldold_params_flat
 
     denom = float(s_vec @ y_vec)
     num = float(s_vec @ s_vec)
-    BB_def = 1e8
-    if not np.isfinite(denom) or not np.isfinite(num):
-        BB1 = BB_def
-    if denom <= 0.0:
-        BB1 = BB_def
-    else:
-        denom_safe = denom
-        BB1 = num / denom_safe
-    if not np.isfinite(BB1) or BB1 <= 0.0:
-        BB1 = BB_def
+    if not np.isfinite(denom) or not np.isfinite(num) or num <= 0.0 or denom <= 0.0:
+        return default_scale
 
-    BB1_max = BB_def
-    if BB1 > BB1_max:
-        print(f"{t} BB1={BB1:.3e} exceeds cap {BB1_max:.3e}, clamping.")
-        BB1 = BB1_max
+    bb1_scale = num / denom
+    if not np.isfinite(bb1_scale) or bb1_scale <= 0.0:
+        return default_scale
 
-    dim = hess_inv_default.shape[0]
-    return BB1 * np.eye(dim)
+    max_scale = float(max_scale)
+    if np.isfinite(max_scale) and max_scale > 0.0 and bb1_scale > max_scale:
+        if t is not None:
+            print(f"{t} BB1={bb1_scale:.3e} exceeds cap {max_scale:.3e}, clamping.")
+        bb1_scale = max_scale
+
+    return bb1_scale

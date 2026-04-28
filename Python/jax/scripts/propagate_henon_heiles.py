@@ -15,13 +15,19 @@ jax.config.update("jax_compilation_cache_dir", str(__import__("pathlib").Path.ho
 def parse_args():
     """Parse command-line arguments for Henon-Heiles simulation."""
     parser = argparse.ArgumentParser(description="Simulate Henon-Heiles system using the Rothe method.")
-    parser.add_argument("--dim", type=int, default=2, help="Dimension of the system (1, 2, 4, or 6)")
+    parser.add_argument("--dim", type=int, default=2, help="Dimension of the system")
     parser.add_argument("--splitting_type", type=str, default="none", help="Splitting type for Rothe propagation")
     parser.add_argument("--dt", type=float, default=0.01, help="Time step")
     parser.add_argument("--num_gaussians", type=int, default=1, help="Number of Gaussians")
     parser.add_argument("--epsilon", type=float, required=True, help="Global Rothe-error budget")
-    parser.add_argument("--regularization_lambda", type=float, default=1e-10, help="Tikhonov regularization strength")
+    parser.add_argument("--regularization_lambda", type=float, required=True, help="Tikhonov regularization strength")
     parser.add_argument("--random_seed", type=int, default=0, help="RNG seed for Gaussian sampling")
+    parser.add_argument(
+        "--remove_overlapping_gaussians",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Remove one dynamic Gaussian if its overlap with a frozen Gaussian exceeds 0.99, then re-optimize.",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +73,7 @@ def main():
         rothe_nograd=rothe_error,
         splitting_type=splitting_type,
         output_config=OutputConfig(name=filename, polynomial_string=hehe_string, epsilon=epsilon),
+        remove_overlapping_gaussians=args.remove_overlapping_gaussians,
     )
 
     nsteps_total = nsteps

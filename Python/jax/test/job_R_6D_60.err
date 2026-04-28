@@ -1,0 +1,20 @@
+[2026-03-16T13:06:56.260] error: *** JOB 17089039 ON gpu-12-8 CANCELLED AT 2026-03-16T13:06:56 DUE to SIGNAL Terminated ***
+[2026-03-16T13:29:02.810] error: *** JOB 17089012 ON c7-8 CANCELLED AT 2026-03-16T13:29:02 DUE to SIGNAL Terminated ***
+E0316 13:29:36.434316 1208447 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0316 13:29:36.434420 1208448 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0316 13:29:36.434550 1208449 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+[2026-03-16T13:44:25.932] error: *** JOB 17089095 ON gpu-12-8 CANCELLED AT 2026-03-16T13:44:25 DUE to SIGNAL Terminated ***
+E0316 13:45:18.512404 1210874 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0316 13:45:18.512517 1210875 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+E0316 13:45:18.512553 1210876 numa_hwloc.cc:121] Call to hwloc_set_cpubind() failed: Invalid argument [22]
+W0316 13:45:27.545413 1210749 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0316 13:45:27.792672 1210749 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0316 13:45:30.041904 1210749 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0316 13:45:31.276484 1210749 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0316 13:47:23.219715 1210749 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+[2026-03-21T13:45:07.012] error: *** JOB 17089200 ON gpu-12-8 CANCELLED AT 2026-03-21T13:45:07 DUE TO TIME LIMIT ***
+W0323 09:42:53.249711 3746090 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0323 09:42:53.736289 3746090 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0323 09:42:55.711780 3746090 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0323 09:42:57.253520 3746090 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.
+W0323 09:44:03.451321 3746090 pjrt_executable.cc:638] Assume version compatibility. PjRt-IFRT does not track XLA executable versions.

@@ -35,7 +35,7 @@ def parse_sim_name(raw: str) -> str:
     return name
 
 
-def load(filename: str) -> tuple[np.ndarray, np.ndarray]:
+def load(filename: str) -> tuple[np.ndarray, np.ndarray, int]:
     """Load ``t`` and ``double_autocorrelation`` from a simulation file.
 
     Input:
@@ -44,6 +44,7 @@ def load(filename: str) -> tuple[np.ndarray, np.ndarray]:
     Output:
         - ``times``: NumPy array of time points
         - ``autocorr``: NumPy complex array of double autocorrelation values
+        - ``n_gaussians``: inferred Gaussian count (latest ``n_dynamic``)
 
     If autocorrelation is non-finite at ``t=0``, it is set to ``1+0j``.
     """
@@ -53,14 +54,23 @@ def load(filename: str) -> tuple[np.ndarray, np.ndarray]:
     times = np.asarray(data.get("t", []))
     autocorr_list = data["double_autocorrelation"]
 
-    autocorr = np.array([v if v is not None else np.nan + 0j for v in autocorr_list], dtype=np.complex128)
+    autocorr = np.array(
+        [v if v is not None else np.nan + 0j for v in autocorr_list], dtype=np.complex128
+    )
 
     finite_mask = np.isfinite(np.real(autocorr)) & np.isfinite(np.imag(autocorr))
     t0_mask = np.isclose(np.abs(times), 0.0)
     fix_mask = (~finite_mask) & t0_mask
     autocorr[fix_mask] = 1.0 + 0.0j
 
-    return times, autocorr
+    n_dynamic = np.asarray(data.get("n_dynamic", []))
+    if n_dynamic.size > 0:
+        n_gaussians = int(n_dynamic[-1])
+    else:
+        # Fallback: infer from first saved parameter block shape.
+        n_gaussians = int(np.asarray(data["params"][0]).shape[0])
+
+    return times, autocorr, n_gaussians
 
 
 def sort_by_time(times: np.ndarray, autocorr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -72,34 +82,43 @@ def sort_by_time(times: np.ndarray, autocorr: np.ndarray) -> tuple[np.ndarray, n
 def calculate_spectrum(times: np.ndarray, autocorr: np.ndarray):
     # Use legacy convention explicitly: x = 2t in damping.
     x = 2.0 * np.asarray(times)
+    autocorr = np.conj(autocorr)  # legacy convention: S(t) = <psi(t)|psi(0)>^*
     y = np.array(autocorr) * np.exp(-x / 30)
     yf = np.asarray(ifft(y))
     N = len(times)
-    # If t_final=100, this gives T_final=200 as requested.
-    T = (2.0 * times[-1]) / N
+    T = (times[-1]) / N
     xf = fftfreq(N, T)[: N // 2] * np.pi
     yf = np.real(yf[: N // 2])
     return xf, yf
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Read time points and double autocorrelation from simulation files")
+    parser = argparse.ArgumentParser(
+        description="Read time points and double autocorrelation from simulation files"
+    )
     parser.add_argument(
-        "sim_names", nargs="+", help="One or more simulation names (or full filenames in wave_function_data)"
+        "sim_names",
+        nargs="+",
+        help="One or more simulation names (or full filenames in wave_function_data)",
     )
     args = parser.parse_args()
     all_times = []
     all_autocorrs = []
+    all_n_gaussians = []
     for raw_name in args.sim_names:
         sim_name = parse_sim_name(raw_name)
-        times, autocorr = load(raw_name)
+        times, autocorr, n_gaussians = load(raw_name)
         times, autocorr = sort_by_time(times, autocorr)
         all_times.append(times)
         all_autocorrs.append(autocorr)
+        all_n_gaussians.append(n_gaussians)
         print(f"Loaded {sim_name!r}:")
-    for times, autocorr in zip(all_times, all_autocorrs):
-        # xf, yf = calculate_spectrum(times, autocorr)
-        plt.plot(2 * times, abs(autocorr) ** 2, label="Real part")
+    for times, autocorr, n_gaussians in zip(all_times, all_autocorrs, all_n_gaussians):
+        xf, yf = calculate_spectrum(times, autocorr)
+        plt.plot(xf, yf, label=f"Spectrum (N_g={n_gaussians})")
+        # plt.plot(2 * times, abs(autocorr) ** 2, label="Real part")
+    plt.xlim(0, 20)
+    plt.legend()
     plt.show()
 
 
